@@ -1,0 +1,22 @@
+{
+  "ITEM-001": {
+    "name": "A",
+    "bin": "A01",
+    "position_mm": 100
+  },
+  "ITEM-002": {
+    "name": "B",
+    "bin": "A02",
+    "position_mm": 300
+  },
+  "ITEM-003": {
+    "name": "C",
+    "bin": "A03",
+    "position_mm": 500
+  },
+  "ITEM-004": {
+    "name": "D",
+    "bin": "A04",
+    "position_mm": 700
+  }
+}
