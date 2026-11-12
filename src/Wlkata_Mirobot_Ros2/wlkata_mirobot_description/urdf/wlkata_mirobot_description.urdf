@@ -1,0 +1,395 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="wlkata_mirobot_description">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="0.00072637 2.209E-05 0.024286"
+        rpy="0 0 0" />
+      <mass
+        value="5.4549" />
+      <inertia
+        ixx="0.0068505"
+        ixy="-3.1029E-07"
+        ixz="4.3798E-07"
+        iyy="0.0066527"
+        iyz="-7.7717E-07"
+        izz="0.011461" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="link1">
+    <inertial>
+      <origin
+        xyz="0.010226 0.017244 -0.018123"
+        rpy="0 0 0" />
+      <mass
+        value="1.965" />
+      <inertia
+        ixx="0.0014023"
+        ixy="3.5897E-05"
+        ixz="3.8285E-05"
+        iyy="0.00073623"
+        iyz="-0.00019681"
+        izz="0.0013706" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/link1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/link1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint1"
+    type="revolute">
+    <origin
+      xyz="0 0 0.127"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="link1" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.919"
+      upper="2.792"
+      effort="100.1"
+      velocity="1.1" />
+  </joint>
+  <link
+    name="link2">
+    <inertial>
+      <origin
+        xyz="0.054564 0.0036247 -0.02961"
+        rpy="0 0 0" />
+      <mass
+        value="0.7031" />
+      <inertia
+        ixx="0.00012083"
+        ixy="4.1868E-05"
+        ixz="6.1178E-05"
+        iyy="0.00091302"
+        iyz="1.6109E-06"
+        izz="0.00096355" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/link2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/link2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint2"
+    type="revolute">
+    <origin
+      xyz="0.029687 0 0"
+      rpy="-1.5708 -1.5708 0" />
+    <parent
+      link="link1" />
+    <child
+      link="link2" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.61"
+      upper="1.221"
+      effort="100.1"
+      velocity="1.1" />
+  </joint>
+  <link
+    name="link3">
+    <inertial>
+      <origin
+        xyz="0.010015 0.0067303 0.0058691"
+        rpy="0 0 0" />
+      <mass
+        value="1.1994" />
+      <inertia
+        ixx="0.00055805"
+        ixy="-1.8278E-06"
+        ixz="-3.762E-05"
+        iyy="0.00046464"
+        iyz="1.9262E-05"
+        izz="0.00060548" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/link3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/link3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint3"
+    type="revolute">
+    <origin
+      xyz="0.108 0 0"
+      rpy="0 0 0" />
+    <parent
+      link="link2" />
+    <child
+      link="link3" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2.094"
+      upper="1.047"
+      effort="100.1"
+      velocity="1.1" />
+  </joint>
+  <link
+    name="link4">
+    <inertial>
+      <origin
+        xyz="-2.27494176252563E-06 0.00429946429752296 -0.0217007586034353"
+        rpy="0 0 0" />
+      <mass
+        value="0.261362285743437" />
+      <inertia
+        ixx="7.62946525456058E-05"
+        ixy="-1.8813595005788E-09"
+        ixz="1.37948236797395E-08"
+        iyy="8.44036851142834E-05"
+        iyz="-7.8757185275307E-07"
+        izz="1.78027327989624E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/link4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/link4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint4"
+    type="revolute">
+    <origin
+      xyz="0.02 0.16875 0"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="link3" />
+    <child
+      link="link4" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.141"
+      upper="2.53"
+      effort="100.1"
+      velocity="1.1" />
+  </joint>
+  <link
+    name="link5">
+    <inertial>
+      <origin
+        xyz="-1.49291428453435E-05 0.00217467833122231 0.000185578609392454"
+        rpy="0 0 0" />
+      <mass
+        value="0.0483173226824662" />
+      <inertia
+        ixx="3.27681389556251E-06"
+        ixy="-2.35584003566182E-09"
+        ixz="1.59030016893255E-10"
+        iyy="2.49207926320219E-06"
+        iyz="1.94517744625766E-08"
+        izz="2.72634770886973E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/link5.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/link5.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint5"
+    type="revolute">
+    <origin
+      xyz="0 0 0"
+      rpy="1.5708 -1.5708 0" />
+    <parent
+      link="link4" />
+    <child
+      link="link5" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.49"
+      upper="0.523"
+      effort="100.1"
+      velocity="1.1" />
+  </joint>
+  <link
+    name="link6">
+    <inertial>
+      <origin
+        xyz="-5.96518891830544E-05 4.61869313414281E-06 0.0512817501478371"
+        rpy="0 0 0" />
+      <mass
+        value="0.228704914887219" />
+      <inertia
+        ixx="2.95425401479579E-05"
+        ixy="1.6149345364096E-10"
+        ixz="9.93219991005698E-09"
+        iyy="2.95495732583093E-05"
+        iyz="-1.24362201752828E-09"
+        izz="1.94804289719368E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/link6.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wlkata_mirobot_description/meshes/link6.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint6"
+    type="revolute">
+    <origin
+      xyz="0 0 0"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="link5" />
+    <child
+      link="link6" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-6.283"
+      upper="6.283"
+      effort="100.1"
+      velocity="1.1" />
+  </joint>
+</robot>

@@ -1,0 +1,26 @@
+# ROS 2 / colcon build output
+/build/
+/install/
+/log/
+
+# Python build and test artifacts
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+**/build/
+**/dist/
+.pytest_cache/
+
+# Editor state and generated databases
+**/.vscode/
+*.db
+*.sqlite
+*.sqlite3
+
+# Local robot telemetry and taught coordinates
+*.log
+/taught_poses_*.yaml
+
+# Generated diagrams
+/frames_*.gv
+/frames_*.pdf

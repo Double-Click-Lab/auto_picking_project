@@ -1,0 +1,33 @@
+# Goal
+bool start
+
+# Pick position
+float64 pick_x
+float64 pick_y
+float64 pick_z
+float64 pick_rx
+float64 pick_ry
+float64 pick_rz
+
+# Place position
+float64 place_x
+float64 place_y
+float64 place_z
+float64 place_rx
+float64 place_ry
+float64 place_rz
+
+# Approach height
+float64 approach_height
+
+---
+# Result
+bool success
+string message
+
+---
+# Feedback
+uint8 current_step
+uint8 total_steps
+string current_state
+float32 progress

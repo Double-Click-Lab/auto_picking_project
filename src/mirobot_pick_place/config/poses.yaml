@@ -1,0 +1,78 @@
+# ==========================================
+# WLKATA MIROBOT PICK AND PLACE CONFIG
+# ==========================================
+
+# 실제 로봇이 없어도 실행 가능한 시뮬레이션
+simulation_mode: true
+
+# 실제 장비 제어 안전 잠금
+hardware_enable: false
+coordinates_confirmed: false
+# 서비스 호출을 통한 명시적 홈밍 허용. 자동 홈밍은 없음.
+homing_enable: false
+# false: 기존 수직 Z 접근, true: RPY로 계산한 도구축 방향 접근.
+# true에서 approach_height는 수직 높이가 아니라 경로 거리(mm).
+tool_axis_approach: false
+
+# 실제 측정한 작업 영역을 x/y/z/rx/ry/rz: [최소, 최대]로 지정해야 함.
+# null인 상태에서는 하드웨어 모드를 시작할 수 없음.
+workspace_bounds: null
+# 하드웨어 이동은 G01 + 매 명령의 F 값 사용 (mm/min).
+# 이 값은 예시이며 실제 속도 검증은 별도로 필요.
+motion_feedrate_mm_min: 100.0
+startup_observation_sec: 3.0
+position_tolerance_mm: 1.0
+orientation_tolerance_deg: 1.0
+
+serial_port: "/dev/ttyUSB0"
+baudrate: 115200
+
+motion_timeout_sec: 60.0
+pump_settle_sec: 1.0
+release_settle_sec: 0.5
+simulation_step_delay_sec: 0.5
+
+# 모든 좌표는 현재 시뮬레이션용 예시
+# 실제 로봇에 사용하기 전에 좌표 검증 필수
+
+poses:
+
+  home:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    rx: 0.0
+    ry: 0.0
+    rz: 0.0
+
+  pick_approach:
+    x: 100.0
+    y: 0.0
+    z: 80.0
+    rx: 0.0
+    ry: 0.0
+    rz: 0.0
+
+  pick:
+    x: 100.0
+    y: 0.0
+    z: 50.0
+    rx: 0.0
+    ry: 0.0
+    rz: 0.0
+
+  place_approach:
+    x: 100.0
+    y: 100.0
+    z: 80.0
+    rx: 0.0
+    ry: 0.0
+    rz: 0.0
+
+  place:
+    x: 100.0
+    y: 100.0
+    z: 50.0
+    rx: 0.0
+    ry: 0.0
+    rz: 0.0
