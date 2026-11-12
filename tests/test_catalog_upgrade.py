@@ -31,6 +31,7 @@ def test_old_simulation_catalog_adds_d_once(tmp_path, monkeypatch):
                         ['person-1', {'A': 0}, {'B': 0}, {'C': 0}, {'D': 1}]]})
                 assert response.status_code == 202
                 order_id = response.json()['orders'][0]['order_id']
+                assert (await client.post(f'/orders/{order_id}/start')).status_code == 200
                 for _ in range(100):
                     order = (await client.get('/orders/' + order_id)).json()
                     if order['status'] == 'completed':

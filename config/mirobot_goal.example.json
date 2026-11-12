@@ -1,0 +1,15 @@
+{
+  "pick_x": 100.0,
+  "pick_y": 0.0,
+  "pick_z": 50.0,
+  "pick_rx": 0.0,
+  "pick_ry": 0.0,
+  "pick_rz": 0.0,
+  "place_x": 100.0,
+  "place_y": 100.0,
+  "place_z": 50.0,
+  "place_rx": 0.0,
+  "place_ry": 0.0,
+  "place_rz": 0.0,
+  "approach_height": 30.0
+}

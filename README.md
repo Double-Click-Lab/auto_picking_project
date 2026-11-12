@@ -1,5 +1,17 @@
 # 라즈베리파이 FastAPI 출고 서버
 
+## 주문앱 접수와 관리자앱 작업 시작
+
+주문앱의 `POST /orders/app-inventor`는 HTTP **202**로 주문을 접수하고 `waiting`(작업 시작 대기) 상태로 저장합니다. 작업자가 돌아도 자동 출고하지 않습니다. 본문과 `X-API-Key` 인증 방식은 기존과 같습니다.
+
+관리자앱은 3초마다 `GET /orders?limit=100`을 조회해 `waiting` 주문을 표시하고, 선택한 주문에 본문 없이 `POST /orders/{order_id}/start`를 보냅니다. 성공은 HTTP **200**, 응답은 `{"order_id":"...","status":"queued","accepted":true}`입니다. 이후 기존 작업자가 `running`으로 처리합니다. 접수 순서와 관계없이 대기 주문을 선택할 수 있습니다.
+
+없는 주문은 404, `waiting` 이외의 상태나 다른 `queued`·`running`·`waiting_box` 주문이 있으면 409, 시스템 오류 또는 작업자 중단은 503입니다. 같은 주문이 이미 `queued` 또는 `running`이면 재요청은 200과 현재 상태를 반환합니다. API 키가 없거나 일치하지 않으면 401입니다. 오류 응답에는 `detail`이 있습니다.
+
+`waiting_box`가 되면 실제 상자 교체 후 `POST /orders/{order_id}/box-ready`를 보내세요. 성공은 기존대로 HTTP **200**입니다. 다음 `waiting` 주문도 관리자앱에서 다시 작업 시작을 눌러야 합니다. `GET /orders/{order_id}`의 `progress.status_text`는 `waiting`일 때 `작업 시작 대기`를 표시합니다. 대기 주문이 있으면 품목·좌표 설정 변경도 차단됩니다.
+
+호환용 `POST /orders`, `POST /orders/batch`는 기존처럼 `queued`로 접수되어 자동 진행합니다. 아래 설명 중 자동 진행과 FIFO는 이 두 API의 동작입니다. `CLEAR_ORDERS_ON_START=false`이면 `waiting`도 재시작 후 보존되고, true이면 다른 주문 기록과 함께 삭제됩니다. `/docs`에서 시작 API를 확인할 수 있습니다.
+
 ## 조회 전용 신호 모니터
 
 ```bash
@@ -16,17 +28,17 @@ cd /home/chan/server && env -u API_KEY python3 tools/signal_monitor.py
 
 현재 기본 동작은 `REQUIRE_BOX_CONFIRMATION=true`입니다. 아래의 기존 자동 완료 설명과 달리, 모든 주문은 물품 이송이 끝나면 `waiting_box` 상태에서 멈추며 마지막 주문도 확인을 받아야 `completed`가 됩니다. 모의 모드에도 같은 규칙을 적용합니다. 기존 자동 완료 방식은 이 옵션을 `false`로 설정하면 사용할 수 있습니다.
 
-앱에서 주문 입력 시 앱 내부 리스트에 보관하고, **작업시작 버튼을 눌렀을 때** `POST /orders/app-inventor`로 리스트 전체를 전송하세요. 서버는 접수 즉시 입력 순서대로 처리합니다. 서버에 미리 접수한 주문을 별도의 시작 버튼까지 보류하는 기능은 없습니다.
+주문앱은 `POST /orders/app-inventor`로 주문을 접수하고 접수 완료만 표시합니다. 관리자앱은 `GET /orders?limit=100`으로 `waiting` 주문을 조회하고, 선택한 주문의 **작업 시작** 버튼에서 `POST /orders/{order_id}/start`를 호출합니다. 성공(200) 후 다음 절차로 출고와 상자 교체 상태를 확인하세요.
 
 1. 접수 응답(202)의 각 `order_id`를 저장합니다.
 2. 기존처럼 1초마다 `GET /orders/{order_id}`를 조회합니다(`X-API-Key` 필요).
 3. 응답의 `status`가 `waiting_box`이고 `box_replacement_required`가 `true`이면 앱에 **상자를 치우고 새 상자를 놓아 주세요**와 **새 상자 준비 완료** 버튼을 표시합니다. `progress.status_text`, `progress.events`에도 안내가 있습니다. HTTP 조회 방식이며 서버가 앱으로 직접 푸시하지는 않습니다.
 4. 사람이 실제로 상자를 교체한 뒤 버튼을 누르면 **해당 대기 주문 ID**로 `POST /orders/{order_id}/box-ready`를 보냅니다. 본문은 필요 없으며 기존 `X-API-Key`를 사용합니다.
-5. 성공 응답은 `200`과 `{"order_id":"...","status":"completed","accepted":true}`입니다. 그 후 작업자가 다음 대기 주문을 시작합니다. 다음 주문이 없으면 대기합니다.
+5. 성공 응답은 `200`과 `{"order_id":"...","status":"completed","accepted":true}`입니다. 그 후 다음 `waiting` 주문을 골라 작업 시작을 누르세요. 호환 API로 이미 `queued` 주문을 접수했다면 기존처럼 자동 진행합니다.
 
 `box-ready`는 같은 주문에 재전송해도 같은 성공 결과를 반환합니다. 이전 주문의 중복 확인은 다음 주문의 대기를 해제하지 않습니다. 아직 이송 중이거나 대기 중인 주문에 확인을 보내면 409, 없는 ID는 404, 키 불일치는 401입니다. 이송 중에 버튼을 활성화하거나 자동으로 확인 요청을 보내지 마세요. 한 주문 안의 상품/개별 물품 사이에는 교체하지 않고 **주문자 한 명의 전체 물품 이송 후** 교체합니다. 라인트레이서 신호는 보내지 않습니다.
 
-테스트 프로그램의 6번 조회는 상자 대기에 도달하면 안내 후 메뉴로 돌아오며, 실제 교체 후 8번에서 해당 주문을 선택하고 확인하면 다음 주문으로 진행합니다. 앱과 테스트 프로그램의 확인은 같은 API를 사용합니다.
+테스트 프로그램의 3번 접수도 `waiting`으로 저장되며, 작업 시작은 관리자앱의 시작 API를 사용합니다. 6번 조회는 작업 시작 대기 또는 상자 대기에 도달하면 안내 후 메뉴로 돌아옵니다. 실제 교체 후 8번에서 해당 주문을 선택하고 확인할 수 있습니다. 앱과 테스트 프로그램의 상자 확인은 같은 API를 사용합니다.
 
 `CLEAR_ORDERS_ON_START=false`이면 상자 대기는 DB에 보존되어 재시작 후에도 확인 전까지 다음 주문을 막습니다. 현재 `.env`의 초기화 옵션이 true이면 재시작 시 주문·대기 상태가 모두 삭제됩니다. 대기를 보존하려면 재시작 전에 false로 변경하세요. 기존 실행 중인 서버에는 코드 변경 후 재시작이 필요합니다.
 
@@ -82,10 +94,14 @@ cp .env.example .env
 set -a
 source .env
 set +a
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+.venv/bin/python tools/run_server.py
 ```
 
 프로젝트 폴더에서 실행하세요. `.env`는 위 명령 또는 systemd가 로드합니다. `catalog.json`에 실제 품목 ID, 이름, 보관함 번호를 등록합니다. 수량은 1 이상의 정수이며 중복 품목 ID와 미등록 품목은 거절합니다. 품목 수와 주문자 수는 코드에 고정하지 않습니다. 재고 수량 및 실제 물건 존재 여부를 확인하는 기능은 아직 없습니다.
+
+`tools/run_server.py`는 지원되는 환경에서 IPv4와 IPv6를 같은 포트와 단일 작업자로 수신합니다. 기존 IPv4 주소도 계속 사용할 수 있습니다. 시작 시 `서버 수신: IPv4 + IPv6`를 확인하세요. 지원하지 않는 환경은 안내 후 IPv4로 실행합니다. 포트 변경은 `--port`를 사용하며, 기존 서버를 종료한 뒤 실행하세요. `.env`의 주문 초기화 옵션은 기존대로 적용됩니다.
+
+휴대폰의 `192.0.0.4`, 라우터의 `192.0.0.1` 같은 변환용 주소를 서버 주소로 입력하지 않습니다. 앱은 서버가 실행되는 기기의 주소로 접속해야 합니다. 서버의 IPv6 주소는 `ip -6 addr`에서 확인하고, URL은 `http://[서버의IPv6주소]:8000/health`처럼 대괄호로 감쌉니다. 이 주소에서 응답을 확인한 뒤 주문앱은 같은 주소의 `/orders/app-inventor`, 관리자앱은 `/orders?limit=100`을 사용하세요. 네트워크를 변경하면 서버 주소를 다시 확인하세요. 이 실행 도구는 핫스팟의 라우팅·방화벽·휴대폰의 로컬 네트워크 접근 권한을 변경하지 않습니다.
 
 API 문서: `http://라즈베리파이IP:8000/docs`. 모의 실행 완료는 실제 출고 완료를 의미하지 않습니다. `/health`에서 실행 모드와 오류를 확인할 수 있습니다.
 
@@ -106,11 +122,13 @@ API 문서: `http://라즈베리파이IP:8000/docs`. 모의 실행 완료는 실
 }
 ```
 
-`202` 응답의 `order_id`를 저장한 뒤 Clock 컴포넌트로 1초마다 `GET /orders/{order_id}`를 호출합니다. JSON은 `JsonTextDecodeWithDictionaries`로 읽습니다. 상태는 `queued`, `running`, `completed`, `failed`입니다. `completed` 또는 `failed`이면 조회 타이머를 중지합니다. 접수 응답은 출고 완료 신호가 아닙니다.
+위 예시는 호환용 `POST /orders`입니다. `202` 응답의 `order_id`를 저장한 뒤 Clock 컴포넌트로 1초마다 `GET /orders/{order_id}`를 호출합니다. JSON은 `JsonTextDecodeWithDictionaries`로 읽습니다. 상태는 `queued`, `running`, `waiting_box`, `completed`, `failed`입니다. `completed` 또는 `failed`이면 조회 타이머를 중지합니다. `waiting_box`에서는 실제 상자 교체 후 확인 요청을 보냅니다. 접수 응답은 출고 완료 신호가 아닙니다.
 
 통신 오류로 재전송할 때 **같은 request_id, customer_id와 같은 품목 목록**을 사용하면 기존 주문을 반환합니다. 새 주문에만 새 request_id를 발급하세요. 같은 ID로 다른 내용을 전송하면 `409`, 입력 오류는 `422`, 장치 오류 상태에서는 `503`을 반환합니다. `/items`에서 등록 품목을 조회할 수 있습니다.
 
 ## 실제 장치 연결 규약
+
+미로봇 ROS2 `/pick_place` 연결은 [미로봇 연결 안내](docs/mirobot.md)를 참고하세요. `tools/mirobot_bridge.py`가 기존 HTTP robot 명령을 ROS2 액션으로 전달하고 실제 액션 결과를 서버에 보고합니다. 동작 없는 `--check`와 명령 수신용 `--run`을 구분합니다.
 
 `.env`에서 `SIMULATION=false`로 바꾸고 서로 다른 강력한 `API_KEY`, `DEVICE_KEY`를 설정합니다. 장치 제어 프로그램은 `X-Device-Key` 헤더를 넣어 다음 API를 주기적으로 조회합니다.
 
@@ -251,7 +269,7 @@ env -u API_KEY python3 tools/test_client.py
 
 실제 모드에서는 명령 생성만으로 신호 전달 완료를 표시하지 않습니다. 장치가 명령 조회 API에서 명령을 가져오면 전달 기록을 남기고, 완료 API로 성공 결과를 보내면 확인·이송 완료 문구를 표시합니다. 명령 ID별 전달 시각과 완료 시각도 DB에 저장됩니다. 이전 기록에 시각 정보가 없으면 임의로 채우지 않습니다. 주문 조회 API의 `progress.status_text`, `progress.events`에 같은 한글 기록이 들어 있으므로 앱에서도 사용할 수 있습니다. 이벤트 ID로 중복 표시를 막을 수 있습니다.
 
-현재 통신은 HTTP 명령 조회/완료 보고 방식이며 ROS·MQTT 토픽 발행/구독은 구현되어 있지 않습니다. 이 출력은 해당 토픽의 송수신을 입증하지 않습니다. 향후 토픽 어댑터를 연결할 때 실제 명령 전달과 완료 수신을 이 기록에 연결해야 합니다. 변경 적용에는 서버와 테스트 도구를 모두 재시작해야 합니다.
+서버의 장치 통신은 HTTP 명령 조회/완료 보고 방식입니다. 미로봇은 별도 `tools/mirobot_bridge.py`에서 ROS2 `/pick_place` 액션과 연결합니다. 브리지 없이 표시되는 모의 기록은 ROS2 송수신을 입증하지 않습니다. 카메라·모터의 ROS 어댑터와 MQTT 토픽 발행/구독은 구현되어 있지 않습니다. 변경 적용에는 서버와 테스트 도구를 모두 재시작해야 합니다.
 
 ## 앱 인벤터 A~D 리스트 접수
 
@@ -272,6 +290,6 @@ env -u API_KEY python3 tools/test_client.py
 
 상품 매핑은 A→ITEM-001, B→ITEM-002, C→ITEM-003, D→ITEM-004입니다. 초기 catalog.json에는 네 품목이 있지만 **기존 SQLite 설정은 일반적으로 자동 변경되지 않습니다. 다만 모의 실행에서 예전 ITEM-001~ITEM-003만 저장된 DB는 서버 시작 시 한 번 D를 catalog.json에서 추가합니다. 기존 품목·모터 길이는 유지하며 D 좌표가 모터 길이 이내일 때만 추가합니다. 이후 의도적으로 삭제한 D는 재시작해도 복구하지 않습니다. 실제 장치 모드에서는 자동 추가하지 않습니다**. 기존 서버는 대기·진행 주문이 없고 오류가 해제된 상태에서 `GET /configuration` 결과에 ITEM-004를 추가하고 A~D 이름 및 실제 보관함 좌표를 확인한 뒤 `PUT /configuration`으로 전체 설정을 저장하세요. 예시 좌표는 실제 측정값이 아닙니다. 수량이 양수인 상품이 설정에 없으면 422로 전체 거절합니다.
 
-새 전송마다 고유한 request_id를 만들고, 응답 유실 시 같은 ID와 전체 내용을 그대로 재전송합니다. 같은 ID로 주문자 수·순서·내용을 바꾸면 409입니다. 재전송은 기존 주문 ID들을 반환합니다. 응답은 기존 일괄 접수처럼 `{"orders": [{"order_id": "...", "customer_id": "person-1", "status": "queued"}]}`이며 각 ID를 `GET /orders/{order_id}`로 조회합니다. 접수 순서대로 기존 모터→카메라→수량만큼 로봇팔 흐름을 실행합니다.
+새 전송마다 고유한 request_id를 만들고, 응답 유실 시 같은 ID와 전체 내용을 그대로 재전송합니다. 같은 ID로 주문자 수·순서·내용을 바꾸면 409입니다. 재전송은 기존 주문 ID와 현재 상태를 반환합니다. 신규 접수 응답은 `{"orders": [{"order_id": "...", "customer_id": "person-1", "status": "waiting"}]}`이며 각 ID를 `GET /orders/{order_id}`로 조회합니다. 관리자앱이 선택한 주문에 `POST /orders/{order_id}/start`를 보낸 뒤 기존 모터→카메라→수량만큼 로봇팔 흐름을 실행합니다.
 
 새 앱 구조를 선택할 수 있다면 위치에 의존하는 리스트보다 기존 `/orders/batch`의 `customer_id`, `request_id`, `items` 객체 형식을 권장합니다. 구매한 상품만 items에 넣으면 상품 추가나 순서 변경에 유연하고 각 주문의 재전송도 독립적으로 처리할 수 있습니다. 이 경우 수량 0은 생략하고 실제 item_id를 보냅니다.

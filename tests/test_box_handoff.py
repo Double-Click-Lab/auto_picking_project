@@ -15,10 +15,12 @@ def test_box_handoff_blocks_fifo_and_survives_restart(tmp_path, monkeypatch):
         app = create_app(path, True)
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
-                batch = {'request_id': 'handoff', 'orders': [
-                    ['first', {'A': 1}, {'B': 0}, {'C': 0}, {'D': 0}],
-                    ['second', {'A': 1}, {'B': 0}, {'C': 0}, {'D': 0}]]}
-                response = await client.post('/orders/app-inventor', json=batch)
+                # The legacy batch API retains automatic FIFO processing.
+                batch = {'orders': [
+                    {'request_id': customer, 'customer_id': customer,
+                     'items': [{'item_id': 'ITEM-001', 'quantity': 1}]}
+                    for customer in ('first', 'second')]}
+                response = await client.post('/orders/batch', json=batch)
                 assert response.status_code == 202
                 first, second = [r['order_id'] for r in response.json()['orders']]
                 assert (await client.post(f'/orders/{second}/box-ready')).status_code == 409

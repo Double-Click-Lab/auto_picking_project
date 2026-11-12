@@ -82,7 +82,7 @@ class Result(StrictModel):
 
 
 
-STATUS_TEXT = {"queued": "접수 대기", "running": "출고 처리 중", "waiting_box": "상자를 치우고 새 상자를 놓아 주세요", "completed": "출고 완료", "failed": "처리 실패"}
+STATUS_TEXT = {"waiting": "작업 시작 대기", "queued": "접수 대기", "running": "출고 처리 중", "waiting_box": "상자를 치우고 새 상자를 놓아 주세요", "completed": "출고 완료", "failed": "처리 실패"}
 
 
 def progress_events(order, simulation):
@@ -421,14 +421,14 @@ def create_app(db_path=None, simulation=None):
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         with connect() as db:
-            if db.execute("SELECT 1 FROM orders WHERE status IN ('queued', 'running', 'waiting_box')").fetchone():
+            if db.execute("SELECT 1 FROM orders WHERE status IN ('waiting', 'queued', 'running', 'waiting_box')").fetchone():
                 raise HTTPException(409, "대기 및 진행 주문을 모두 처리한 뒤 설정을 변경하세요")
             if db.execute("SELECT fault FROM system").fetchone()[0]:
                 raise HTTPException(409, "장치 오류를 복구한 뒤 설정을 변경하세요")
             db.execute("UPDATE configuration SET body=?", (config.model_dump_json(),))
         return config
 
-    def enqueue(orders, batch_identity=None):
+    def enqueue(orders, batch_identity=None, status="queued"):
         results = []
         accepted = []
         with connect() as db:
@@ -455,9 +455,9 @@ def create_app(db_path=None, simulation=None):
                     raise HTTPException(503, "장치 및 서버 상태 확인이 필요합니다")
                 order_id = str(uuid4())
                 db.execute("INSERT INTO orders (id, request_id, customer_id, items, status, configuration) "
-                           "VALUES (?, ?, ?, ?, 'queued', ?)",
-                           (order_id, order.request_id, order.customer_id, payload, config.model_dump_json()))
-                results.append({"order_id": order_id, "customer_id": order.customer_id, "status": "queued"})
+                           "VALUES (?, ?, ?, ?, ?, ?)",
+                           (order_id, order.request_id, order.customer_id, payload, status, config.model_dump_json()))
+                results.append({"order_id": order_id, "customer_id": order.customer_id, "status": status})
                 accepted.append((order_id, order))
         for order_id, order in accepted:
             emit('order_received', '주문 접수', order_id=order_id,
@@ -485,7 +485,7 @@ def create_app(db_path=None, simulation=None):
                    for number, (product, entry) in enumerate(zip("ABCD", row[1:]), 1)
                    if entry[product] > 0],
         ) for index, row in enumerate(batch.orders)]
-        return {"orders": enqueue(orders, (batch.request_id, digest))}
+        return {"orders": enqueue(orders, (batch.request_id, digest), status="waiting")}
 
     @app.get("/orders", dependencies=[Depends(user_auth)])
     async def list_orders(customer_id: str | None = None,
@@ -535,6 +535,26 @@ def create_app(db_path=None, simulation=None):
              order_id=order_id, customer_id=row['customer_id'])
         return {'order_id': order_id, 'status': 'completed', 'accepted': True}
 
+    @app.post('/orders/{order_id}/start', status_code=200, dependencies=[Depends(user_auth)])
+    async def start_order(order_id: str):
+        with connect() as db:
+            # Serialize the availability check and state change, including
+            # requests made at the same time for different waiting orders.
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT status FROM orders WHERE id=?', (order_id,)).fetchone()
+            if row is None:
+                raise HTTPException(404, 'Order not found')
+            if row['status'] in ('queued', 'running'):
+                return {'order_id': order_id, 'status': row['status'], 'accepted': True}
+            if row['status'] != 'waiting':
+                raise HTTPException(409, '작업 시작 대기 중인 주문이 아닙니다')
+            if db.execute('SELECT fault FROM system').fetchone()[0] or app.state.worker.done():
+                raise HTTPException(503, '장치 및 서버 상태 확인이 필요합니다')
+            if db.execute("SELECT 1 FROM orders WHERE status IN ('queued', 'running', 'waiting_box')").fetchone():
+                raise HTTPException(409, '진행 중이거나 상자 교체 대기 중인 주문이 있습니다')
+            db.execute("UPDATE orders SET status='queued' WHERE id=?", (order_id,))
+        return {'order_id': order_id, 'status': 'queued', 'accepted': True}
+
     @app.get("/devices/{device}/commands/next", dependencies=[Depends(device_auth)])
     async def next_command(device: Literal["motor", "camera", "robot"]):
         if simulation:
@@ -550,6 +570,8 @@ def create_app(db_path=None, simulation=None):
                      order_id=row['order_id'], device=device, action=row['action'])
             data = dict(row)
             data["payload"] = json.loads(data["payload"])
+            data['expires_at'] = data['created'] + timeout
+            data['expires_in'] = max(0.0, data['expires_at'] - time.time())
             return {"command": data}
 
     @app.post("/devices/{device}/commands/{command_id}/complete", dependencies=[Depends(device_auth)])

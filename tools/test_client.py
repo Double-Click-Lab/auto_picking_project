@@ -143,7 +143,7 @@ class Client:
             print(f'서버 저장 주문 {result["total"]}건 중 최근 {len(orders)}건')
             for index, order in enumerate(orders, 1):
                 summary = ', '.join(f'{i["item_id"]} {i["quantity"]}개' for i in order['items'])
-                print(f'{index}. {order["customer_id"]} / { {"queued": "접수 대기", "running": "출고 처리 중", "completed": "출고 완료", "failed": "처리 실패"}.get(order["status"], order["status"])} / {summary} / {order["order_id"]}')
+                print(f'{index}. {order["customer_id"]} / { {"waiting": "작업 시작 대기", "queued": "접수 대기", "running": "출고 처리 중", "waiting_box": "상자 교체 대기", "completed": "출고 완료", "failed": "처리 실패"}.get(order["status"], order["status"])} / {summary} / {order["order_id"]}')
             value = required('목록 번호 / 주문자 ID / 주문 ID (뒤로: b): ')
             if value.lower() == 'b':
                 return None
@@ -171,7 +171,7 @@ class Client:
         return self.request('GET', '/orders/' + quote(order_id, safe=''))
 
     def show_order(self, order, seen=None):
-        states = {'queued': '접수 대기', 'running': '출고 처리 중',
+        states = {'waiting': '작업 시작 대기', 'queued': '접수 대기', 'running': '출고 처리 중',
                   'waiting_box': '상자 교체 대기',
                   'completed': '출고 완료', 'failed': '처리 실패'}
         if seen is None:
@@ -199,6 +199,9 @@ class Client:
                 order = self.get_order(order_id)
                 self.show_order(order, seen)
                 if order['status'] in ('completed', 'failed'):
+                    break
+                if order['status'] == 'waiting':
+                    print('작업 시작 대기 중입니다. 관리자앱에서 이 주문을 선택하고 작업 시작을 누르세요.')
                     break
                 if order['status'] == 'waiting_box':
                     print('상자 교체 대기 중입니다. 앱에서 준비 완료 또는 테스트 메뉴 8번으로 확인하세요.')

@@ -24,6 +24,7 @@ def test_restart_cleanup_and_request_reuse(tmp_path, monkeypatch, clear):
                 assert (await client.put('/configuration', json=config)).status_code == 200
                 response = await client.post('/orders/app-inventor', json=body)
                 old_id = response.json()['orders'][0]['order_id']
+                assert (await client.post(f'/orders/{old_id}/start')).status_code == 200
                 for _ in range(100):
                     order = (await client.get('/orders/' + old_id)).json()
                     if order['status'] == 'completed':

@@ -7,7 +7,7 @@ Type=simple
 User=warehouse
 WorkingDirectory=/opt/warehouse
 EnvironmentFile=/opt/warehouse/.env
-ExecStart=/opt/warehouse/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+ExecStart=/opt/warehouse/.venv/bin/python /opt/warehouse/tools/run_server.py
 Restart=on-failure
 RestartSec=5
 

@@ -133,3 +133,15 @@ class FriendlyOrderTests(unittest.TestCase):
             client.show_order(order, seen)
             client.show_order(order, seen)
         self.assertEqual(output.call_count, 1)
+
+    def test_watch_waiting_order_explains_admin_start_and_returns(self):
+        client = Client('http://localhost', '')
+        order = {'customer_id': 'person-1', 'status': 'waiting', 'items': [],
+                 'progress': {'events': []}}
+        with patch.object(client, 'choose_order', return_value='waiting-order'), \
+             patch.object(client, 'get_order', return_value=order) as get_order, \
+             patch('tools.test_client.time.sleep') as sleep, patch('builtins.print') as output:
+            client.watch()
+        get_order.assert_called_once_with('waiting-order')
+        sleep.assert_not_called()
+        self.assertTrue(any('관리자앱' in str(call) for call in output.call_args_list))

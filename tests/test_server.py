@@ -215,7 +215,10 @@ def test_app_inventor_batch(tmp_path):
         changed = copy.deepcopy(body)
         changed['orders'].pop()
         assert client.post('/orders/app-inventor', json=changed).status_code == 409
-        wait_for(client, ids[1], 'completed')
+        assert all(order['status'] == 'waiting' for order in response.json()['orders'])
+        for order_id in ids:
+            assert client.post(f'/orders/{order_id}/start').status_code == 200
+            wait_for(client, order_id, 'completed')
         first = client.get('/orders/' + ids[0]).json()
         assert first['status'] == 'completed'
         assert first['items'] == [{'item_id': 'ITEM-001', 'quantity': 2}, {'item_id': 'ITEM-004', 'quantity': 1}]
