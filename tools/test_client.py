@@ -89,6 +89,7 @@ class Client:
         for order in result.get('orders', [result]):
             if order['order_id'] not in [o['order_id'] for o in self.history]:
                 self.history.append(order)
+        return result
 
     def read_order(self, catalog):
         customer = required('주문자 ID: ')
@@ -135,6 +136,28 @@ class Client:
             if any(entry[product] for product, entry in zip('ABCD', row[1:])):
                 return row
             print('주문자마다 하나 이상의 상품 수량이 필요합니다. 다시 입력하세요.')
+
+    def submit_app_inventor_orders(self):
+        catalog = self.request('GET', '/items')
+        if not any(f'ITEM-00{i}' in catalog for i in range(1, 5)):
+            print('A~D에 해당하는 ITEM-001~ITEM-004가 없습니다. 서버의 품목 등록 설정을 확인하세요.')
+            return None
+        orders = []
+        while True:
+            print(f'주문자 {len(orders) + 1} 입력')
+            orders.append(self.read_app_inventor_order(catalog))
+            print(f'입력된 주문자: {len(orders)}명 (아직 전송하지 않았습니다.)')
+            while True:
+                action = input('다음 주문자 추가: Enter / 전체 전송: s / 취소: b: ').strip().lower()
+                if action in ('', 's', 'b'):
+                    break
+                print('Enter, s, b 중 선택하세요.')
+            if action == 's':
+                return self.submit('/orders/app-inventor',
+                                   {'request_id': str(uuid4()), 'orders': orders})
+            if action == 'b':
+                print('주문 입력을 취소했습니다. 서버에 전송하지 않았습니다.')
+                return None
 
     def choose_order(self):
         result = self.request('GET', '/orders')
@@ -187,36 +210,112 @@ class Client:
                 print(event['message'])
                 seen.add(event['id'])
 
-    def watch(self):
-        order_id = self.choose_order()
-        if order_id is None:
+    def confirm_box(self, order_id):
+        order = self.get_order(order_id)
+        if order['status'] != 'waiting_box':
+            print('상자 교체 대기 중인 주문이 아닙니다. 준비 완료 신호를 보내지 않았습니다.')
+            return False
+        print('물품 이송이 끝났습니다. 상자를 치우고 새 상자를 준비하세요.')
+        print('모의 실행에서는 상자 교체가 끝났다고 가정하고 확인하면 됩니다.')
+        while True:
+            answer = input('새 상자 준비 완료: y / 대기를 유지하고 메뉴로: b: ').strip().lower()
+            if answer == 'b':
+                print('상자 교체 대기를 유지합니다. 4번으로 이어서 진행하거나 8번으로 확인하세요.')
+                return False
+            if answer == 'y':
+                print(f'새 상자 준비 완료 신호 전송: {order_id}')
+                pretty(self.request('POST', '/orders/' + quote(order_id, safe='') + '/box-ready'))
+                return True
+            print('y 또는 b를 입력하세요.')
+
+    def process_order(self, order_id):
+        """대기 주문을 시작하고, 진행 표시와 상자 확인까지 이어서 처리합니다."""
+        order = self.get_order(order_id)
+        print(f'주문자: {order["customer_id"]}')
+        for item in order['items']:
+            print(f'  {item["item_id"]}: {item["quantity"]}개')
+        print(f'주문 ID: {order_id}')
+        if order['status'] == 'waiting':
+            while True:
+                answer = input('이 주문 작업 시작: y / 메뉴로: b: ').strip().lower()
+                if answer == 'b':
+                    print('작업 시작 대기를 유지합니다. 4번에서 이어서 진행하세요.')
+                    return False
+                if answer == 'y':
+                    break
+                print('y 또는 b를 입력하세요.')
+            print(f'작업 시작 명령 전송: {order_id}')
+            pretty(self.request('POST', '/orders/' + quote(order_id, safe='') + '/start'))
+        return self.watch(order_id, interactive=True)
+
+    def full_test(self):
+        health = self.request('GET', '/health')
+        pretty(health)
+        if health.get('fault') or not health.get('worker_alive'):
+            print('서버 오류 또는 작업자 중단 상태입니다. 1번에서 서버 상태를 확인하세요.')
             return
+        print('전체 테스트: 주문 접수 → 작업 시작 → 모터 → 카메라 → 로봇팔 → 상자 교체 확인 → 완료')
+        print('각 주문의 작업 시작과 상자 준비 완료는 y로 확인합니다.')
+        result = self.submit_app_inventor_orders()
+        if result is None:
+            return
+        orders = result['orders']
+        print(f'{len(orders)}명 주문 접수 완료. 입력 순서대로 진행합니다.')
+        for index, order in enumerate(orders, 1):
+            print(f'\n[{index}/{len(orders)}] 주문자: {order["customer_id"]}')
+            if not self.process_order(order['order_id']):
+                print('전체 테스트를 중지합니다. 남은 주문은 4번에서 선택해 이어서 진행하세요.')
+                return
+        print(f'전체 테스트 완료: {len(orders)}명 주문이 모두 출고 완료되었습니다.')
+
+    def watch(self, order_id=None, interactive=False):
+        if order_id is None:
+            order_id = self.choose_order()
+        if order_id is None:
+            return False
         print('1초 간격으로 조회합니다. Ctrl+C를 누르면 조회만 중지합니다.')
         seen = set()
+        previous_status = None
+        states = {'waiting': '작업 시작 대기', 'queued': '접수 대기', 'running': '출고 처리 중',
+                  'waiting_box': '상자 교체 대기', 'completed': '출고 완료', 'failed': '처리 실패'}
         print('장치의 명령 전달 및 완료 기록을 표시합니다.')
         try:
             while True:
                 order = self.get_order(order_id)
+                status = order['status']
+                if status != previous_status:
+                    print(f'주문자: {order["customer_id"]} / 상태: {states.get(status, status)}')
+                    previous_status = status
                 self.show_order(order, seen)
-                if order['status'] in ('completed', 'failed'):
-                    break
-                if order['status'] == 'waiting':
-                    print('작업 시작 대기 중입니다. 관리자앱에서 이 주문을 선택하고 작업 시작을 누르세요.')
-                    break
-                if order['status'] == 'waiting_box':
+                if status == 'completed':
+                    return True
+                if status == 'failed':
+                    print('처리 실패: ' + (order.get('error') or '서버의 주문 상세를 확인하세요.'))
+                    return False
+                if status == 'waiting':
+                    print('작업 시작 대기 중입니다. 테스트 메뉴 4번 또는 관리자앱에서 작업 시작을 누르세요.')
+                    return False
+                if status == 'waiting_box':
+                    if interactive:
+                        if not self.confirm_box(order_id):
+                            return False
+                        continue
                     print('상자 교체 대기 중입니다. 앱에서 준비 완료 또는 테스트 메뉴 8번으로 확인하세요.')
-                    break
+                    return False
                 time.sleep(1)
         except KeyboardInterrupt:
-            print('\n조회 중지. 서버의 주문 처리는 계속됩니다.')
+            print('\n조회 중지. 서버의 주문 처리는 계속됩니다. 4번에서 이어서 진행하세요.')
+            return False
 
     def run(self):
         print(f'테스트 서버: {self.url}')
         print('주문 전송은 연결된 서버에서 실제로 실행됩니다. 모의 테스트는 mode=simulation을 확인하세요.')
         while True:
             print('\n1 서버 상태  2 품목 목록  3 통합 주문 입력')
+            print('4 작업 시작·진행·상자 확인 (기존 주문 이어하기)')
             print('5 주문 상세 조회  6 주문 완료까지 조회  7 접속 요청 기록')
             print('8 새 상자 준비 완료 (선택한 주문의 대기 해제)')
+            print('9 전체 테스트 (접수부터 작업 시작·진행·상자 교체·완료까지)')
             print('0 종료')
             try:
                 choice = input('선택: ').strip()
@@ -227,27 +326,11 @@ class Client:
                 elif choice == '2':
                     pretty(self.request('GET', '/items'))
                 elif choice == '3':
-                    catalog = self.request('GET', '/items')
-                    if not any(f'ITEM-00{i}' in catalog for i in range(1, 5)):
-                        print('A~D에 해당하는 ITEM-001~ITEM-004가 없습니다. 서버의 품목 등록 설정을 확인하세요.')
-                        continue
-                    orders = []
-                    while True:
-                        print(f'주문자 {len(orders) + 1} 입력')
-                        orders.append(self.read_app_inventor_order(catalog))
-                        print(f'입력된 주문자: {len(orders)}명 (아직 전송하지 않았습니다.)')
-                        while True:
-                            action = input('다음 주문자 추가: Enter / 전체 전송: s / 취소: b: ').strip().lower()
-                            if action in ('', 's', 'b'):
-                                break
-                            print('Enter, s, b 중 선택하세요.')
-                        if action == 's':
-                            self.submit('/orders/app-inventor',
-                                        {'request_id': str(uuid4()), 'orders': orders})
-                            break
-                        if action == 'b':
-                            print('주문 입력을 취소했습니다. 서버에 전송하지 않았습니다.')
-                            break
+                    self.submit_app_inventor_orders()
+                elif choice == '4':
+                    order_id = self.choose_order()
+                    if order_id is not None:
+                        self.process_order(order_id)
                 elif choice == '5':
                     order_id = self.choose_order()
                     if order_id is not None:
@@ -256,8 +339,10 @@ class Client:
                     self.watch()
                 elif choice == '8':
                     order_id = self.choose_order()
-                    if order_id and input('상자를 치우고 새 상자를 놓았습니까? 완료했다면 y: ').strip().lower() == 'y':
-                        pretty(self.request('POST', '/orders/' + quote(order_id, safe='') + '/box-ready'))
+                    if order_id is not None and self.confirm_box(order_id):
+                        self.show_order(self.get_order(order_id))
+                elif choice == '9':
+                    self.full_test()
                 elif choice == '7':
                     records = self.request('GET', '/connections')['requests']
                     print('최근 접속 요청 (최대 200건, 최신순 / 시각 UTC)')
@@ -268,9 +353,10 @@ class Client:
                     if not records:
                         print('기록이 없습니다. 휴대폰에서 /health 접속 또는 주문 전송 후 다시 확인하세요.')
                 else:
-                    print('0, 1, 2, 3, 5, 6, 7, 8 중 선택하세요. 주문 입력은 3번입니다.')
+                    print('0~9 중 선택하세요. 접수만 하려면 3번, 전체 테스트는 9번입니다.')
             except (RuntimeError, ValueError) as exc:
                 print(f'오류: {exc}')
+                print('접수된 주문은 서버에 남습니다. 4번에서 선택해 이어서 진행하세요.')
             except (EOFError, KeyboardInterrupt):
                 print('\n테스트 도구를 종료합니다. 서버의 주문 처리는 계속됩니다.')
                 return

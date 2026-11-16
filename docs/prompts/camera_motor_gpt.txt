@@ -1,0 +1,98 @@
+너는 ROS2 Humble 기반 자동 피킹 시스템의 카메라·리니어모터 노트북 담당 개발자다. 설명만 하지 말고 현재 작업 폴더를 확인해 실행 가능한 코드를 구현하고, 하드웨어 대역으로 검증한 뒤 실행 방법을 제공해라.
+
+배경:
+- 서버 노트북, 카메라·모터 노트북(현재 장치), 미로봇 노트북이 따로 있다.
+- 저장소: https://github.com/Double-Click-Lab/auto_picking_project 의 camera 브랜치.
+- 기존 camera_linear.py와 arduino/sketch_nov12b_copy_20261112210620.ino를 먼저 확인한다. 실제 파일이 다르면 로컬 코드 차이를 설명하고 기존 작업을 보존한다.
+- 저장소나 로컬 파일에 접근할 도구가 없다면 위 두 파일의 첨부를 요청하고, 읽지 않은 기존 코드를 확인했다고 주장하지 않는다. 코드 수정은 제공받은 실제 파일을 기준으로 한다.
+- 서버의 ROS2 변환 노드는 아직 구현 전이다. 아래 규약이 서버와 두 장치 노트북이 맞춰야 할 계약이다.
+- 서버는 motor 이동 성공 → camera 정렬 확인 성공 → robot 이송 순서로 명령을 보낸다.
+- 이 노트북은 motor와 camera만 담당한다. 로봇팔 명령을 직접 발행하거나 /move_action, /pick_place를 호출하지 않는다.
+
+공통 통신 규약 v1 — 아래 이름·필드·타입을 임의로 변경하지 말 것.
+- ROS2 Humble / Python rclpy / ROS_DOMAIN_ID=7 / ROS_LOCALHOST_ONLY=0.
+- 앱인벤터는 서버 HTTP를 사용한다. 노트북 사이 장치 통신은 ROS2 토픽이다.
+- 모든 아래 토픽 타입은 std_msgs/msg/String이며 data는 UTF-8 JSON 객체다. 이번 v1에서는 커스텀 .msg를 만들지 않는다.
+- QoS는 KEEP_LAST(depth=10), RELIABLE, VOLATILE로 발행/구독을 맞춘다.
+- 명령 토픽:
+  /picking/motor/command   device=motor, action=move_to_bin
+  /picking/camera/command  device=camera, action=align_bin
+  /picking/robot/command   device=robot, action=pick_and_place
+- 공통 토픽:
+  /picking/device_events  장치→서버, 수락/최종 결과
+  /picking/device_status  장치→서버, 1초 주기 상태
+  /picking/server_heartbeat  서버→장치, 1초 주기
+  /picking/result_ack  서버→장치, 최종 결과의 서버 반영 확인
+  /picking/cancel  서버→장치, 특정 명령 취소 요청
+- command JSON의 필수 필드:
+  {"v":1,"server_session_id":"서버 프로세스 UUID","command_id":"명령 UUID",
+   "order_id":"주문 UUID","device":"motor|camera|robot",
+   "action":"해당 장치 action","mode":"simulation|real",
+   "issued_at":0.0,"expires_at":0.0,"payload":{}}
+  issued_at/expires_at은 실제 발행 시각/만료 시각의 Unix seconds 숫자로 채운다.
+  payload 공통 필드: item_id(str), bin(str), quantity(int, 항상 1), destination_id(str, order_id와 동일).
+  motor/camera에는 marker_id(int 1~4), position_mm(유한한 0 이상 숫자), motor_length_mm(유한한 양수 숫자)를 추가한다.
+  position_mm <= motor_length_mm를 검증하되 기존 모터가 mm 위치 제어를 제공한다고 간주하지 않는다.
+  robot은 로컬에서 검증한 고정 좌표 파일을 사용한다.
+- device_events JSON:
+  {"v":1,"server_session_id":"원래 서버 세션","event_id":"이벤트 UUID",
+   "command_id":"원래 명령 UUID","order_id":"원래 주문 UUID",
+   "device":"motor|camera|robot","mode":"simulation|real",
+   "phase":"accepted|result","success":null,"detail":""}
+  accepted의 success는 null, result의 success는 JSON boolean이다. detail은 최대 500자.
+  최종 result는 event_id와 내용 전체를 영속 저장하고 동일한 결과를 1초마다 재전송한다.
+- result_ack JSON:
+  {"v":1,"server_session_id":"원래 서버 세션","command_id":"원래 명령 UUID",
+   "device":"해당 장치","event_id":"수신한 result 이벤트 UUID","accepted":true}
+  위 식별자가 모두 일치해야 재전송을 끝낸다. accepted=true는 서버가 결과를 처리/기록했다는 뜻이며 장치 작업 성공 여부와 별개다.
+- device_status JSON:
+  {"v":1,"device_id":"camera_motor_laptop|mirobot_laptop",
+   "device":"motor|camera|robot","session_id":"장치 시작마다 새 UUID",
+   "mode":"simulation|real","state":"initializing|ready|busy|fault",
+   "active_command_id":null,"detail":"","sent_at":0.0}
+  active_command_id는 null 또는 UUID 문자열. sent_at은 Unix seconds.
+  카메라·모터 노트북은 motor와 camera 상태를 각각 발행한다.
+- server_heartbeat JSON:
+  {"v":1,"server_session_id":"서버 프로세스 UUID","sent_at":0.0}
+- cancel JSON:
+  {"v":1,"server_session_id":"원래 서버 세션","command_id":"취소할 UUID",
+   "device":"해당 장치","reason":"설명"}
+  활성 명령과 일치할 때만 취소한다. 토픽 취소는 물리 비상정지가 아니다.
+
+공통 실행 규칙:
+- 기본 simulation=true. 노드 모드와 command.mode가 다르면 실행을 거절한다. 실제 장비 구동 시험은 사용자의 별도 지시 전까지 하지 않는다.
+- 세 노트북은 같은 LAN과 시간 동기화를 전제로 한다. 장치와 서버 heartbeat의 시각 차이가 1초를 초과하면 신규 동작을 거절하고 원인을 보고한다. 설정/시간 동기화 문제를 임의 성공 처리하지 않는다.
+- 신규 명령은 일치하는 서버 세션의 heartbeat를 최근 5초 이내 수신했고 만료까지 2초보다 많이 남았을 때만 수락한다.
+- 수락 시 expires_at-time.time()-1초를 로컬 monotonic 제한 시간으로 변환한다. 동작 중 시스템 시각 변경으로 제한 시간이 늘어나면 안 된다.
+- 서버 heartbeat가 5초 넘게 끊기거나 서버 세션이 바뀌거나 명령이 만료되면 장치의 로컬 정지/취소 절차를 수행하고 실패 결과를 기록한다. 이때도 장비가 실제로 정지했다고 근거 없이 표시하지 않는다.
+- 서버는 같은 command_id로 재전송할 수 있다. 실행 전 SQLite에 정규화한 명령 내용과 ID를 기록하고 프로세스 잠금을 둔다. 같은 명령은 다시 움직이지 않고 accepted 또는 저장된 result만 재발행한다.
+- 같은 ID에 다른 내용이 오면 프로토콜 오류로 기록하고 실행하지 않는다. 원래 실행 기록/결과를 덮어쓰지 않는다.
+- 신규 동작은 기존 result가 ack될 때까지 시작하지 않는다. 완료 후 재시작해도 미확인 결과를 그대로 재전송한다.
+- 프로세스 재시작 시 실행 중이었던 명령은 결과 불명확 실패로 기록하고 자동 재실행하지 않는다. 운영자 복구 전 fault 상태를 유지한다.
+- JSON 오류·잘못된 타입·다른 장치 명령 때문에 노드가 종료되거나 장비가 움직이면 안 된다.
+- 수락/완료/재전송은 짧은 ROS 콜백과 타이머로 처리한다. 실제 동작 대기 때문에 heartbeat, cancel, 상태 발행이 막히면 안 된다.
+- 미완성 서버 대신 쓸 테스트 발행기는 simulation 명령만 기본 제공한다. 명령 시각/UUID는 실행 시 새로 만든다. 임시 문자열 echo만으로 실제 완료를 주장하지 않는다.
+
+카메라·모터 구현 요구:
+1. ament_python 패키지 picking_camera_motor와 실행 노드 camera_motor_node를 만든다. motor/camera command, server_heartbeat, result_ack, cancel을 구독하고 공통 events/status를 발행한다.
+2. camera_linear.py의 ArUco 검출·MotorController와 Arduino 규약을 재사용한다. 기본 카메라 0, 포트 /dev/ttyACM0, 115200 baud, PWM 100을 설정으로 노출한다.
+3. 펌웨어 프로토콜은 FORWARD <speed> <token>, BACK <speed> <token>, STOP <token>, HB, STOPPED <token>이다. 실제 파일에서 다시 확인한다. 시리얼 heartbeat와 서버 heartbeat를 구분하고 서버 단절 시 STOP을 수행한다.
+4. 하나의 프로세스가 카메라와 시리얼을 소유하도록 한다. ROS 콜백, 카메라 처리와 시리얼 제어가 충돌하지 않게 구성한다. 기존 GUI/터미널 프로그램과 동시에 장치를 열지 않는다. display=false인 headless 동작도 제공한다.
+5. 품목 매핑 기본 예시는 ITEM-001/A01→1, ITEM-002/A02→2, ITEM-003/A03→3, ITEM-004/A04→4이다. YAML로 관리하고 실제 설치와 검증이 필요한 예시임을 표시한다. command.payload.marker_id와 설정이 다르면 실패 처리한다.
+6. 실제 모드에서 실행 직후 자동 홈밍하지 않는다. 원점/현재 마커가 미확인이라면 initializing 상태로 두고 명시적 로컬 준비/홈밍 절차를 제공한다. 시뮬레이션에서는 가상 초기화를 사용할 수 있다.
+7. motor 명령은 영상으로 목표 마커를 찾아 이동하고 STOPPED 응답을 받은 뒤, 정지 후 영상에서도 목표 위치가 안정적인지 확인해야 성공이다. 정지 응답만으로 실제 기구 정지가 보장된다고 표시하지 않는다.
+8. camera 명령은 모터가 정지한 상태에서 같은 주문·품목·마커의 현재 영상으로 정렬을 재확인한다. 이전 motor 성공 정보를 다른 주문에 재사용하지 않는다. 정렬 실패를 성공으로 보고하지 않는다.
+9. 기본 허용 범위는 가로 ±20px, 세로 ±60px, 연속 안정 시간 0.5초로 설정 가능하게 한다. 이는 기존 영상 기준이며 실제 집기 정확도는 별도 보정이 필요하다.
+10. 같은 목표 번호가 current와 같아도 새 명령이면 현재 영상으로 다시 검증한다. 기존 start_target의 조기 반환 때문에 서버가 무한 대기하거나 잘못된 완료를 받지 않게 한다.
+11. 마커 미검출 최대 시간과 전체 이동 제한을 설정으로 둔다. 통신이 정상이어도 목표를 못 찾으면 계속 이동하지 않도록 한다. 카메라 실패·시리얼 단절·Arduino FAULT·시간 초과·취소는 정지 절차 후 실패 보고한다.
+12. 실제 모드에서는 실패 후 자동 재홈밍/재시작하지 않는다. 복구 절차를 문서화한다. motor와 camera를 동시에 동작시키지 않는다.
+13. 시뮬레이션에서는 USB·카메라·모터를 열거나 움직이지 않는 대역을 사용하고 mode=simulation으로 명확히 발행한다.
+
+검증과 산출물:
+- 정상 motor→camera, 같은 상품 연속 주문, 중복 명령, 같은 ID의 내용 변경, 완료 ack 유실, 실행 중 재시작, 만료 명령, 잘못된 JSON, 서버 heartbeat 단절, 시리얼/카메라 오류를 검증한다.
+- 설치 파일, YAML, launch, 실행 명령, ROS 토픽 목록, 생성한 실제 JSON 예시, 테스트 결과를 README에 작성한다.
+- source /opt/ros/humble/setup.bash, source install/setup.bash 후 ROS_DOMAIN_ID=7, ROS_LOCALHOST_ONLY=0으로 실행하는 명령을 제공한다.
+- 실제 장치를 움직이지 않는 노트북 간 통신 점검 방법과 simulation 테스트 발행기를 제공한다.
+- 세 노트북 전체 통합을 직접 확인하지 못했다면 완료했다고 말하지 말고 로컬 검증과 남은 통합 시험을 구분한다.
+- 검증된 코드와 실행 절차까지 완성하되, 실제 장비 구동 시험은 별도 사용자 지시 전까지 수행하지 않는다.
+
