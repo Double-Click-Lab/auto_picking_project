@@ -124,3 +124,16 @@ PYTHONPATH="$PWD/picking_camera_motor:$PYTHONPATH" /usr/bin/python3 -m pytest -q
 실제 ROS2 두 프로세스의 simulation motor→camera/result/ack 로컬 왕복을 DOMAIN=7, LOCALHOST_ONLY=0으로 확인했다. 처음 샌드박스에서는 UDP socket 제한 오류가 있었으나 공유메모리 통신으로 성공했고, 승인 후 제한 밖에서 재실행하여 UDP 오류 없이 성공했다. 실제 실행 시각/UUID가 담긴 출력은 `test/ros_integration.log`, 생성 JSON 전체 예시는 `test/generated_examples.json`에 보존한다. 예시의 과거 timestamp/UUID를 새 명령으로 복사하지 않는다.
 
 남은 시험: 서로 다른 노트북 간 DDS/방화벽/NTP, 미구현 서버의 HTTP→ROS 변환 및 결과 DB ack, 서버→motor→camera→robot 전체 순서, 실제 USB/Arduino/카메라 연결, 마커 순서/모터 방향/이동 한계, 실제 정지·정렬 정확도/집기 보정. 로컬 simulation 성공은 이 시험들의 완료를 뜻하지 않는다.
+
+## 추가 운영 확인 (2026-11-16)
+
+사용자가 전달한 실행 로그에서 다음을 확인했다.
+
+- `camera_motor_node --ros-args -p simulation:=true` 실행 후 motor와 camera가 각각 `mode=simulation`, `state=ready`, `active_command_id=null` 상태를 주기적으로 발행했다.
+- 같은 `/picking/device_status` 구독에서 `device_id=mirobot_laptop`, `device=robot` 상태도 수신했다. 해당 robot 상태는 `simulation / initializing`, detail은 `waiting for server heartbeat`였다. 미로봇 상태 수신은 확인했으나 다른 노트북과의 양방향 명령 왕복 및 전체 통합 완료를 뜻하지 않는다.
+- 사용자가 실행한 simulation 서버 로그에서도 같은 주문의 motor → camera가 모두 `success=true`였으며 `PASS simulation motor -> camera; hardware unopened`로 완료했다.
+- 사용자는 Arduino 업로드 및 시리얼 모니터의 `STOP 0` → `STOPPED 0` 확인 성공을 보고했다. 이는 사용자 보고이며, ROS 실제 모드의 카메라 정렬·모터 이동 성공을 검증한 결과는 아니다.
+
+서버 통합 대기 시 simulation 장치 노드를 실행한 터미널을 계속 켜 둔다. `ros2 topic echo`로 상태만 보는 별도 터미널은 종료해도 된다. simulation은 Arduino USB·모터 전원·실제 카메라 없이 실행 가능하며, 실제 장비를 사용하기 전에는 시리얼 모니터를 닫아 포트 충돌을 방지한다.
+
+현재 남은 통합 확인은 서버 heartbeat 수신, 서버 발행 명령의 motor → camera → robot 순차 처리, 결과 ack 및 주문 완료 반영이다. 실제 모터 이동·영상 정렬·집기 정확도 역시 아직 확인되지 않았다.
