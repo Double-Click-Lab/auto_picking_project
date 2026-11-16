@@ -150,7 +150,9 @@ class PickPlaceActionServer(Node):
             f"state={self.controller.last_state}, "
             f"ready={self.controller.ready}, initialized={self.initialized}, "
             f"busy={self.goal_active or self.initialization_active}, "
-            f"recovery_required={self.recovery_required} (cached status)"
+            f"recovery_required={self.recovery_required}, "
+            f"mode={'simulation' if self.simulation_mode else 'real'} "
+            "(cached status)"
         )
         return response
 

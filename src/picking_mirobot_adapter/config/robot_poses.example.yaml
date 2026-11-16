@@ -1,0 +1,8 @@
+# EXAMPLE ONLY. These coordinates are for a non-moving simulation stub.
+# They must never be used as real robot coordinates.
+simulation_only: true
+coordinates_confirmed: false
+home: {x: 0.0, y: 0.0, z: 0.0, rx: 0.0, ry: 0.0, rz: 0.0}
+pick: {x: 100.0, y: 0.0, z: 50.0, rx: 0.0, ry: 0.0, rz: 0.0}
+place: {x: 100.0, y: 100.0, z: 50.0, rx: 0.0, ry: 0.0, rz: 0.0}
+approach_height: 30.0
