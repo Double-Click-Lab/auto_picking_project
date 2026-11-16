@@ -245,6 +245,9 @@ class Relay:
             payload['marker_id'] = self.mapping[payload['item_id']+'/'+payload['bin']]
             if not number(payload.get('position_mm')) or not number(payload.get('motor_length_mm')) or not 0 <= payload['position_mm'] <= payload['motor_length_mm'] or payload['motor_length_mm'] <= 0:
                 raise ValueError('invalid mm limits')
+        else:
+            # The Mirobot v1 adapter accepts exactly these four payload fields.
+            payload = {key: payload[key] for key in ('item_id', 'bin', 'quantity', 'destination_id')}
         if not number(source.get('expires_at')) or source['expires_at']-self.wall() <= 2:
             raise ValueError('expired HTTP command')
         return dict(v=1, server_session_id=self.session, command_id=source['id'],

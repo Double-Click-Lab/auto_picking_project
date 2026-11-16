@@ -82,6 +82,16 @@ def test_ready_gating_and_mapping_and_immutable_retries(rig):
     assert journal.get(c['command_id'])['result'] is None
 
 
+def test_robot_payload_matches_strict_mirobot_v1_contract(rig):
+    relay,http,clock,out,journal=rig
+    original=source(clock,'robot')
+    original['payload'].update(customer_id='person',order_id=original['order_id'],destination='shipping_box')
+    command=relay.make_command(original)
+    assert command['payload']=={'item_id':'ITEM-001','bin':'A01','quantity':1,
+                                'destination_id':original['order_id']}
+    assert 'position_mm' in original['payload']  # source HTTP command remains intact
+
+
 def test_result_retry_and_exact_ack_after_http_commit(rig):
     relay,http,clock,out,journal = rig
     http.commands['motor'] = source(clock)

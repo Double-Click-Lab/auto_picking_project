@@ -1,5 +1,8 @@
 # 세 노트북 연결과 앱 없는 시험
 
+최신 미로봇 어댑터가 공개된 뒤의 시작 순서는 [최신 세 브랜치 연결](first_connection.md)을 따른다.
+아래 도메인 179 절차는 서버의 로봇 **대역** 시험용이다. 실제 미로봇 어댑터는 도메인 7을 필수로 검사한다.
+
 ## 구현과 확인 범위
 
 서버의 `tools/picking_server.py`가 기존 HTTP 장치 API를 토픽 규약 v1로 변환한다.
@@ -9,10 +12,10 @@
 
 - 서버: FastAPI + `picking_server.py` + 메뉴형 `test_client.py`.
 - 카메라·모터: camera 브랜치의 `picking_camera_motor` 패키지.
-  확인한 커밋은 `2dacb67b6a9c83334eefad14412ee3915eff106a`.
-- 미로봇: 사용자가 `~/ros2_ws/src/picking_mirobot_adapter`의 기존 어댑터를 보유한다고 알렸다.
-  현재 GitHub mirobot 브랜치에서는 이 소스를 조회할 수 없어 실행 옵션·YAML 스키마 및
-  실제 어댑터 연결은 아직 검증하지 않았다. 임의의 JSON 좌표 파일로 교체하지 않는다.
+  최신 확인 커밋은 `a61b5945f213b1ab9871a32d298b62f3f60d59fe`.
+- 미로봇: `94ff136d10d797f8bedd7c1a98efae58b6054327`의 picking_mirobot_adapter,
+  YAML 좌표 형식, 실행 옵션과 엄격한 네 필드 robot payload 검사를 확인했다.
+  실제 노트북 LAN·장치 구동 검증은 별도다. 임의의 JSON 좌표 파일로 교체하지 않는다.
 - `picking_sim_robot.py`는 서버 검증용 **시뮬레이션 전용 대역**이다.
   ROS Action, 시리얼, 흡착컵, 팔을 호출하지 않는다. 실제 어댑터와 함께 실행하지 않는다.
 

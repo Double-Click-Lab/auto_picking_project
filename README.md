@@ -6,7 +6,8 @@
 `DEVICE_TRANSPORT=topics`에서는 `SIMULATION=true`여도 각 장치 노드의 결과를 기다립니다.
 앱 대신 `tools/test_client.py`의 9번으로 주문부터 상자 확인까지 시험할 수 있습니다.
 실행 순서, 카메라 노드, 조회 점검, 로봇 대역과 실제 어댑터 연결의 남은 조건은
-[세 노트북 연결 가이드](docs/picking_connection.md)를 따르세요. 기본 `.env`는 변경하지 않았습니다.
+[최신 세 브랜치 시작 순서](docs/first_connection.md)를 따르세요.
+별도 로봇 대역 시험은 [연결 가이드](docs/picking_connection.md)에 있습니다. 기본 `.env`는 변경하지 않았습니다.
 
 ## 주문앱 접수와 관리자앱 작업 시작
 
