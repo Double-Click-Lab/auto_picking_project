@@ -1,0 +1,102 @@
+{
+  "command": {
+    "v": 1,
+    "server_session_id": "a43855fe-c9d5-4c3c-a4c9-a146586b50c8",
+    "command_id": "a5d84412-dc8b-42b9-97a6-0ef2291fa46c",
+    "order_id": "4abb8aaf-4faa-4d45-ac12-f6745d21f802",
+    "device": "motor",
+    "action": "move_to_bin",
+    "mode": "simulation",
+    "issued_at": 1794828987.034017,
+    "expires_at": 1794829017.034017,
+    "payload": {
+      "item_id": "ITEM-001",
+      "bin": "A01",
+      "quantity": 1,
+      "destination_id": "4abb8aaf-4faa-4d45-ac12-f6745d21f802",
+      "marker_id": 1,
+      "position_mm": 0.0,
+      "motor_length_mm": 1000.0
+    }
+  },
+  "heartbeat": {
+    "v": 1,
+    "server_session_id": "a43855fe-c9d5-4c3c-a4c9-a146586b50c8",
+    "sent_at": 1794828987.0340238
+  },
+  "events_and_status": [
+    {
+      "v": 1,
+      "server_session_id": "a43855fe-c9d5-4c3c-a4c9-a146586b50c8",
+      "event_id": "a06b1153-22cc-4af5-864d-6d27131165ac",
+      "command_id": "a5d84412-dc8b-42b9-97a6-0ef2291fa46c",
+      "order_id": "4abb8aaf-4faa-4d45-ac12-f6745d21f802",
+      "device": "motor",
+      "mode": "simulation",
+      "phase": "accepted",
+      "success": null,
+      "detail": ""
+    },
+    {
+      "v": 1,
+      "server_session_id": "a43855fe-c9d5-4c3c-a4c9-a146586b50c8",
+      "event_id": "ade7eaa0-b3d8-425d-98dc-06c0cb87fe2d",
+      "command_id": "a5d84412-dc8b-42b9-97a6-0ef2291fa46c",
+      "order_id": "4abb8aaf-4faa-4d45-ac12-f6745d21f802",
+      "device": "motor",
+      "mode": "simulation",
+      "phase": "result",
+      "success": true,
+      "detail": "simulation: fresh virtual image stable after virtual STOPPED; no hardware opened"
+    },
+    {
+      "v": 1,
+      "server_session_id": "a43855fe-c9d5-4c3c-a4c9-a146586b50c8",
+      "event_id": "ade7eaa0-b3d8-425d-98dc-06c0cb87fe2d",
+      "command_id": "a5d84412-dc8b-42b9-97a6-0ef2291fa46c",
+      "order_id": "4abb8aaf-4faa-4d45-ac12-f6745d21f802",
+      "device": "motor",
+      "mode": "simulation",
+      "phase": "result",
+      "success": true,
+      "detail": "simulation: fresh virtual image stable after virtual STOPPED; no hardware opened"
+    },
+    {
+      "v": 1,
+      "device_id": "camera_motor_laptop",
+      "device": "motor",
+      "session_id": "3d3f10ee-036e-4537-be31-0dc38ff6b129",
+      "mode": "simulation",
+      "state": "ready",
+      "active_command_id": null,
+      "detail": "",
+      "sent_at": 1794828987.159023
+    },
+    {
+      "v": 1,
+      "device_id": "camera_motor_laptop",
+      "device": "camera",
+      "session_id": "3d3f10ee-036e-4537-be31-0dc38ff6b129",
+      "mode": "simulation",
+      "state": "ready",
+      "active_command_id": null,
+      "detail": "",
+      "sent_at": 1794828987.1590292
+    }
+  ],
+  "result_ack": {
+    "server_session_id": "a43855fe-c9d5-4c3c-a4c9-a146586b50c8",
+    "command_id": "a5d84412-dc8b-42b9-97a6-0ef2291fa46c",
+    "device": "motor",
+    "event_id": "ade7eaa0-b3d8-425d-98dc-06c0cb87fe2d",
+    "v": 1,
+    "accepted": true
+  },
+  "cancel": {
+    "v": 1,
+    "server_session_id": "a43855fe-c9d5-4c3c-a4c9-a146586b50c8",
+    "command_id": "a5d84412-dc8b-42b9-97a6-0ef2291fa46c",
+    "device": "motor",
+    "reason": "example only"
+  }
+}

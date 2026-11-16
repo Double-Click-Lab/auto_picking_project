@@ -1,0 +1,13 @@
+camera_motor_node:
+  ros__parameters:
+    simulation: true
+    display: false
+    camera: 0
+    port: /dev/ttyACM0
+    baud: 115200
+    pwm: 100
+    tolerance_x: 20.0
+    tolerance_y: 60.0
+    stable_seconds: 0.5
+    marker_timeout: 2.0
+    move_timeout: 20.0

@@ -1,0 +1,6 @@
+# EXAMPLE ONLY: verify physical bin/marker placement before real operation.
+items:
+  ITEM-001/A01: 1
+  ITEM-002/A02: 2
+  ITEM-003/A03: 3
+  ITEM-004/A04: 4
