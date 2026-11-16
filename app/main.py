@@ -131,6 +131,10 @@ def create_app(db_path=None, simulation=None):
     db_path = str(db_path or os.getenv("DB_PATH", "warehouse.sqlite3"))
     simulation = (os.getenv("SIMULATION", "true").lower() == "true"
                   if simulation is None else simulation)
+    device_transport = os.getenv('DEVICE_TRANSPORT', 'http')
+    if device_transport not in ('http', 'topics'):
+        raise ValueError('DEVICE_TRANSPORT must be http or topics')
+    automatic_simulation = simulation and device_transport == 'http'
     api_key = os.getenv("API_KEY", "")
     device_key = os.getenv("DEVICE_KEY", "")
     clear_orders_on_start = os.getenv("CLEAR_ORDERS_ON_START", "false").lower() == "true"
@@ -155,8 +159,8 @@ def create_app(db_path=None, simulation=None):
     def configuration(db):
         return Configuration.model_validate_json(
             db.execute("SELECT body FROM configuration").fetchone()[0])
-    if not simulation and (not api_key or not device_key):
-        raise ValueError("Real mode requires API_KEY and DEVICE_KEY")
+    if not automatic_simulation and (not api_key or not device_key):
+        raise ValueError("Device-controlled mode requires API_KEY and DEVICE_KEY")
 
     def connect():
         db = sqlite3.connect(db_path)
@@ -186,7 +190,7 @@ def create_app(db_path=None, simulation=None):
                 return
             command = db.execute("SELECT * FROM commands WHERE status='pending'").fetchone()
             if command:
-                if simulation:
+                if automatic_simulation:
                     db.execute("UPDATE commands SET status='completed' WHERE id=?", (command["id"],))
                 elif time.time() - command["created"] > timeout:
                     fault(db, "장치 응답 시간 초과: " + command["id"])
@@ -230,7 +234,7 @@ def create_app(db_path=None, simulation=None):
             # All DB work runs without await, so API handlers cannot interleave a transaction.
             try:
                 tick()
-                if simulation:
+                if automatic_simulation:
                     with connect() as db:
                         done = db.execute("SELECT id FROM commands WHERE status='completed' AND result IS NULL").fetchall()
                         for row in done:
@@ -325,7 +329,7 @@ def create_app(db_path=None, simulation=None):
                     db.execute("DELETE FROM commands")
                     db.execute("DELETE FROM orders")
                     db.execute("DELETE FROM app_inventor_requests")
-                    if simulation:
+                    if automatic_simulation:
                         db.execute("UPDATE system SET fault=NULL")
                     logging.warning("서버 시작: 이전 주문·명령·요청 중복 확인 기록을 삭제했습니다")
             task = asyncio.create_task(worker())
@@ -401,6 +405,7 @@ def create_app(db_path=None, simulation=None):
     async def health():
         with connect() as db:
             return {"mode": "simulation" if simulation else "real",
+                    **({'device_transport': 'topics'} if device_transport == 'topics' else {}),
                     "fault": db.execute("SELECT fault FROM system").fetchone()[0],
                     "worker_alive": not app.state.worker.done()}
 
@@ -557,7 +562,7 @@ def create_app(db_path=None, simulation=None):
 
     @app.get("/devices/{device}/commands/next", dependencies=[Depends(device_auth)])
     async def next_command(device: Literal["motor", "camera", "robot"]):
-        if simulation:
+        if automatic_simulation:
             raise HTTPException(409, "Simulation mode has no real device commands")
         with connect() as db:
             row = db.execute("SELECT * FROM commands WHERE device=? AND status='pending' LIMIT 1", (device,)).fetchone()
@@ -576,7 +581,7 @@ def create_app(db_path=None, simulation=None):
 
     @app.post("/devices/{device}/commands/{command_id}/complete", dependencies=[Depends(device_auth)])
     async def complete(device: Literal["motor", "camera", "robot"], command_id: str, result: Result):
-        if simulation:
+        if automatic_simulation:
             raise HTTPException(409, "Simulation mode")
         with connect() as db:
             cmd = db.execute("SELECT * FROM commands WHERE id=? AND device=?", (command_id, device)).fetchone()
