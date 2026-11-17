@@ -1,5 +1,6 @@
 import threading
 import uuid
+from types import SimpleNamespace
 
 from picking_mirobot_adapter.adapter_node import MirobotTopicNode
 from picking_mirobot_adapter.ledger import Ledger
@@ -16,6 +17,30 @@ class FakePublisher:
 class FakeLogger:
     def error(self, _message):
         pass
+
+    def info(self, _message):
+        pass
+
+
+class FakeController:
+    def __init__(self, *, ready=False, error=None):
+        self.ready = ready
+        self.error = error
+        self.home_calls = 0
+
+    def home(self):
+        self.home_calls += 1
+        if self.error:
+            raise RuntimeError(self.error)
+        self.ready = True
+
+
+class FakeLedger:
+    def __init__(self, pending=0):
+        self.pending = pending
+
+    def pending_result_count(self):
+        return self.pending
 
 
 def command():
@@ -67,3 +92,38 @@ def test_repeated_abort_preserves_original_result_event(tmp_path):
     assert current == original
     assert len(node.pub_events.messages) == 1
     node.ledger.close()
+
+
+def test_local_home_requires_homing_enable():
+    node = object.__new__(MirobotTopicNode)
+    controller = FakeController()
+    node.controller_config = {"homing_enable": False}
+    node._controller_init_done = threading.Event()
+    node._controller_init_done.set()
+    node.controller = controller
+    response = node._operator_home(None, SimpleNamespace())
+    assert response.success is False
+    assert "homing_enable" in response.message
+    assert controller.home_calls == 0
+
+
+def test_local_home_uses_open_controller_and_reports_ready():
+    node = object.__new__(MirobotTopicNode)
+    controller = FakeController()
+    node.controller_config = {"homing_enable": True}
+    node._controller_init_done = threading.Event()
+    node._controller_init_done.set()
+    node.controller = controller
+    node.active = None
+    node._homing_active = False
+    node.ledger = FakeLedger()
+    node.state = "fault"
+    node.detail = "Alarm"
+    node.startup_fault = "Alarm"
+    node.get_logger = lambda: FakeLogger()
+    response = node._operator_home(None, SimpleNamespace())
+    assert response.success is True
+    assert controller.home_calls == 1
+    assert node.controller_ready is True
+    assert node.startup_fault == ""
+    assert node._homing_active is False

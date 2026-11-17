@@ -38,13 +38,15 @@ configuration accepted by the existing `validate_config`: set
 `simulation_mode: false`, `hardware_enable: true`,
 `coordinates_confirmed: true`, measured `workspace_bounds`,
 `tool_axis_approach: true`, and `poses.home` matching the fixed-plan HOME.
-The operator must explicitly home the arm before starting this adapter, then
-close the homing/teaching process. If this adapter is already holding the
-serial port, stop it first, home using the existing teaching procedure, quit
-that process, then restart this adapter. The controller still checks
-readiness, workspace, ACK, and final coordinates. Real startup never homes
-automatically. If it sees Alarm/not-Idle, it reports fault and refuses
-commands.
+Real startup never homes automatically. It holds the serial connection and
+reports fault if the robot starts in Alarm/not-Idle. After checking that the
+workspace is clear and the cup is empty, an operator can explicitly request
+homing through the local `/picking/robot/home` Trigger service. This service is
+available only in real mode when `homing_enable: true`; the controller also
+requires pump and valve PWM to be zero. It runs in the same process and keeps
+the serial connection open. The server command topic remains disabled until
+the controller reports ready. The controller still checks workspace, serial
+ACK, and final coordinates for every move.
 
 No command causes automatic retry, an emergency stop, pump reset, or return
 movement after a failure. Cancel, heartbeat loss, and deadline expiry set a
@@ -153,8 +155,22 @@ ros2 run picking_mirobot_adapter mirobot_topic_node --ros-args \
 This launch command is intentionally not run as part of build/test. Do not
 start the legacy `/pick_place` action server, HTTP bridge, or teaching
 terminal at the same time. Starting real mode opens the serial port and reads
-status but does not send homing, movement, or pump commands until a valid
-server topic command arrives.
+status but does not send homing, movement, or pump commands. Homing occurs
+only if an operator calls the explicit local service; the fixed pick-and-place
+plan starts only after a valid server topic command arrives.
+
+For explicit homing while the real adapter is running, keep the robot clear
+and the cup unloaded, then call:
+
+```bash
+ros2 service call /picking/robot/home std_srvs/srv/Trigger "{}"
+```
+
+Wait for the response `success: true` and status `ready` before allowing the
+server to publish a robot command. A service call rejected because
+`homing_enable` is false requires a reviewed controller config update; do not
+work around it by sending `$H` or other raw serial strings while this node
+owns the port.
 
 ## Simulation command publisher
 

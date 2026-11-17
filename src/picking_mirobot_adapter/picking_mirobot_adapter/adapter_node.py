@@ -16,10 +16,11 @@ from ament_index_python.packages import get_package_share_directory
 from mirobot_pick_place.configuration import controller_options, validate_config
 from mirobot_pick_place.mirobot_controller import MirobotController
 from mirobot_pick_place.sequence import build_plan, positions
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 
 from .ledger import Ledger
 from .protocol import (ProtocolError, canonical_json, parse_json_object,
@@ -190,6 +191,12 @@ class MirobotTopicNode(Node):
         self.sub_cancel = self.create_subscription(
             String, TOPICS["cancel"], self._on_cancel, self.qos,
             callback_group=self.callback_group)
+        self.operator_group = ReentrantCallbackGroup()
+        self.home_service = None
+        if self.mode == "real":
+            self.home_service = self.create_service(
+                Trigger, "/picking/robot/home", self._operator_home,
+                callback_group=self.operator_group)
 
         self.heartbeat = None
         self.heartbeat_received_mono = None
@@ -197,6 +204,7 @@ class MirobotTopicNode(Node):
         self.active = None
         self.controller = None
         self.controller_ready = self.mode == "simulation"
+        self._homing_active = False
         self.startup_fault = ""
         self._shutdown_event = threading.Event()
         self._controller_init_done = threading.Event()
@@ -333,7 +341,8 @@ class MirobotTopicNode(Node):
                if self.heartbeat_received_mono is not None else float("inf"))
         reason = command_rejection_reason(
             command, self.mode, self.heartbeat, age, self.ledger.get_fault(),
-            bool(self.active), self.ledger.pending_result_count(), time.time())
+            bool(self.active or self._homing_active),
+            self.ledger.pending_result_count(), time.time())
         if reason:
             return reason
         if not self._controller_init_done.is_set():
@@ -343,6 +352,50 @@ class MirobotTopicNode(Node):
         if not self.controller_ready:
             return "Mirobot controller is not ready; explicit operator initialization is required"
         return ""
+
+    def _operator_home(self, _request, response):
+        """Explicit local homing while retaining this node's serial connection."""
+        if not self.controller_config["homing_enable"]:
+            response.success = False
+            response.message = "homing_enable is false in controller_config"
+            return response
+        if not self._controller_init_done.is_set() or self.controller is None:
+            response.success = False
+            response.message = "Mirobot controller is not connected"
+            return response
+        if self.active or self._homing_active:
+            response.success = False
+            response.message = "another robot operation is active"
+            return response
+        if self.ledger.pending_result_count():
+            response.success = False
+            response.message = "acknowledge pending command results before homing"
+            return response
+
+        self._homing_active = True
+        self.state = "busy"
+        self.detail = "Operator requested homing; waiting for controller Idle"
+        try:
+            # Controller.home accepts an explicit Alarm/Idle preflight and
+            # independently requires pump/valve PWM 0. No pick/place is run.
+            self.controller.home()
+            self.controller_ready = bool(self.controller.ready)
+            if not self.controller_ready:
+                raise RuntimeError("homing returned without controller readiness")
+            self.startup_fault = ""
+            response.success = True
+            response.message = "Homing completed; controller reports Idle and ready"
+            self.get_logger().info(response.message)
+        except Exception as exc:
+            self.controller_ready = False
+            self.startup_fault = (
+                f"Explicit homing failed: {type(exc).__name__}: {str(exc)[:300]}")
+            response.success = False
+            response.message = self.startup_fault[:500]
+            self.get_logger().error(response.message)
+        finally:
+            self._homing_active = False
+        return response
 
     def _run_plan_worker(self, record):
         command = record["command"]
@@ -442,7 +495,8 @@ class MirobotTopicNode(Node):
                 self._publish_event(event)
             self._last_result_republish = now_mono
 
-        if self.mode == "real" and self._controller_init_done.is_set() and self.startup_fault:
+        if (self.mode == "real" and not self._homing_active
+                and self._controller_init_done.is_set() and self.startup_fault):
             self.state = "fault"
             self.detail = self.startup_fault
         if self.active:
@@ -468,6 +522,9 @@ class MirobotTopicNode(Node):
 
         if self.ledger.get_fault():
             self.state = "fault"
+        elif self._homing_active:
+            self.state = "busy"
+            self.detail = "Operator homing in progress"
         elif not self.active:
             if self.mode == "real" and self.startup_fault:
                 self.state = "fault"
