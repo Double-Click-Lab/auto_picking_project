@@ -1,25 +1,25 @@
-"""Nonblocking ROS topic adapter that delegates motion to /pick_place."""
+"""Topic-to-fixed-plan adapter for the Mirobot notebook."""
 
 import fcntl
 import math
 import os
+import queue
+import sys
+import threading
 import time
 import uuid
+from pathlib import Path
 
 import rclpy
 import yaml
-from action_msgs.msg import GoalStatus
 from ament_index_python.packages import get_package_share_directory
-from mirobot_pick_place.configuration import validate_config, validate_pose
-from mirobot_pick_place.sequence import positions
-from mirobot_pick_place_interfaces.action import PickPlace
-from rclpy.action import ActionClient
+from mirobot_pick_place.configuration import controller_options, validate_config
+from mirobot_pick_place.mirobot_controller import MirobotController
+from mirobot_pick_place.sequence import build_plan, positions
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
-from std_srvs.srv import Trigger
-from unique_identifier_msgs.msg import UUID as RosUUID
 
 from .ledger import Ledger
 from .protocol import (ProtocolError, canonical_json, parse_json_object,
@@ -35,60 +35,58 @@ TOPICS = {
     "ack": "/picking/result_ack",
     "cancel": "/picking/cancel",
 }
+AXES = ("x", "y", "z", "rx", "ry", "rz")
 
 
-def load_pose_file(path, simulation_mode, workspace_bounds, tool_axis):
-    """Load and validate the immutable-at-runtime robot pose document."""
+def load_fixed_plan(path, workspace_bounds=None):
+    """Load the single locally configured plan and derive its 60 mm approaches."""
     with open(path, "r", encoding="utf-8") as stream:
-        doc = yaml.safe_load(stream)
-    if not isinstance(doc, dict):
-        raise ValueError("coordinate file root must be a YAML mapping")
-    if not simulation_mode and (doc.get("simulation_only") is not False
-                                or doc.get("coordinates_confirmed") is not True):
-        raise ValueError("real mode requires simulation_only: false and coordinates_confirmed: true")
+        document = yaml.safe_load(stream)
+    if not isinstance(document, dict):
+        raise ValueError("fixed plan root must be a YAML mapping")
+    if document.get("tool_axis_approach") is not True:
+        raise ValueError("fixed plan requires tool_axis_approach: true")
+    if document.get("motion_feedrate_mm_min") != 3000:
+        raise ValueError("fixed plan feedrate must be exactly 3000 mm/min")
     poses = {}
     for name in ("home", "pick", "place"):
-        pose = doc.get(name)
-        if not isinstance(pose, dict):
-            raise ValueError(f"coordinate file is missing {name}")
+        pose = document.get(name)
+        if not isinstance(pose, dict) or set(pose) != set(AXES):
+            raise ValueError(f"fixed plan {name} must contain exactly {AXES}")
         checked = {}
-        for axis in ("x", "y", "z", "rx", "ry", "rz"):
-            value = pose.get(axis)
-            try:
-                valid_number = (not isinstance(value, bool)
-                                and isinstance(value, (int, float))
-                                and math.isfinite(value))
-            except OverflowError:
-                valid_number = False
-            if not valid_number:
-                raise ValueError(f"{name}.{axis} must be finite numeric")
+        for axis in AXES:
+            value = pose[axis]
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value)):
+                raise ValueError(f"fixed plan {name}.{axis} must be finite numeric")
             checked[axis] = float(value)
             if workspace_bounds is not None:
                 low, high = workspace_bounds[axis]
                 if not low <= checked[axis] <= high:
-                    raise ValueError(f"{name}.{axis} outside configured workspace bounds")
+                    raise ValueError(f"fixed plan {name}.{axis} outside configured workspace")
         poses[name] = checked
-    approach = doc.get("approach_height")
-    try:
-        valid_approach = (not isinstance(approach, bool)
-                          and isinstance(approach, (int, float))
-                          and math.isfinite(approach) and approach > 0)
-    except OverflowError:
-        valid_approach = False
-    if not valid_approach:
-        raise ValueError("approach_height must be a finite positive number")
-    # Match the existing sequence's computed approach points and workspace rules.
-    computed = positions(poses["home"], poses["pick"], poses["place"], float(approach), tool_axis=tool_axis)
+    height = document.get("approach_height_mm")
+    if (isinstance(height, bool) or not isinstance(height, (int, float))
+            or not math.isfinite(height) or height != 60):
+        raise ValueError("fixed plan approach_height_mm must be exactly 60")
+    poses["approach_height"] = float(height)
+    plan_poses = positions(poses["home"], poses["pick"], poses["place"],
+                           poses["approach_height"], tool_axis=True)
     if workspace_bounds is not None:
         for name in ("pick_approach", "place_approach"):
-            validate_pose(computed[name], workspace_bounds)
-    poses["approach_height"] = float(approach)
+            for axis in AXES:
+                low, high = workspace_bounds[axis]
+                if not low <= plan_poses[name][axis] <= high:
+                    raise ValueError(f"fixed plan {name}.{axis} outside configured workspace")
+    poses.update(plan_poses)
+    poses["motion_feedrate_mm_min"] = 3000.0
+    poses["tool_axis_approach"] = True
     return poses
 
 
 def command_rejection_reason(command, mode, heartbeat, heartbeat_age,
                              fault, busy, pending_results, now):
-    """Pure admission guard shared by the node and its offline tests."""
+    """Pure protocol admission guard shared with unit tests."""
     if command["mode"] != mode:
         return "command.mode does not match adapter mode"
     if heartbeat is None or heartbeat_age > 5.0:
@@ -108,20 +106,6 @@ def command_rejection_reason(command, mode, heartbeat, heartbeat_age,
     return ""
 
 
-def action_result_success(status, result_success):
-    return status == GoalStatus.STATUS_SUCCEEDED and result_success is True
-
-
-def active_safety_abort_reason(record, heartbeat, heartbeat_age, now_mono):
-    if heartbeat is None or heartbeat_age > 5.0:
-        return "server heartbeat lost for more than 5 seconds"
-    if heartbeat["server_session_id"] != record["command"]["server_session_id"]:
-        return "server heartbeat session changed"
-    if now_mono >= record["deadline_mono"]:
-        return "command expired; local action deadline reached"
-    return ""
-
-
 def cancel_matches(cancel, active_record):
     if not active_record:
         return False
@@ -132,43 +116,51 @@ def cancel_matches(cancel, active_record):
 
 
 class MirobotTopicNode(Node):
+    """Accept server commands and run only the fixed local 10-step plan."""
+
     def __init__(self):
         super().__init__("mirobot_topic_adapter")
         self.declare_parameter("mode", "simulation")
-        self.declare_parameter("simulation_action_backend", False)
-        self.declare_parameter("action_timeout_sec", 45.0)
-        self.declare_parameter("database_path", os.path.expanduser("~/.ros/picking_mirobot_adapter.sqlite3"))
+        self.declare_parameter("plan_timeout_sec", 45.0)
+        self.declare_parameter("database_path", os.path.expanduser(
+            "~/.ros/picking_mirobot_adapter.sqlite3"))
         self.declare_parameter("controller_config", "")
-        self.declare_parameter("coordinate_file", "")
+        self.declare_parameter("plan_file", "")
         self.mode = str(self.get_parameter("mode").value)
-        self.simulation_action_backend = bool(self.get_parameter("simulation_action_backend").value)
-        self.action_timeout_sec = float(self.get_parameter("action_timeout_sec").value)
+        self.plan_timeout_sec = float(self.get_parameter("plan_timeout_sec").value)
         if self.mode not in ("simulation", "real"):
             raise ValueError("mode must be simulation or real")
-        if not math.isfinite(self.action_timeout_sec) or self.action_timeout_sec <= 1:
-            raise ValueError("action_timeout_sec must be finite and greater than 1")
-        if self.mode == "real" and self.simulation_action_backend:
-            raise ValueError("simulation_action_backend cannot be enabled in real mode")
+        if not math.isfinite(self.plan_timeout_sec) or self.plan_timeout_sec <= 1:
+            raise ValueError("plan_timeout_sec must be finite and greater than 1")
         if os.environ.get("ROS_DOMAIN_ID") != "7" or os.environ.get("ROS_LOCALHOST_ONLY") != "0":
             raise RuntimeError("set ROS_DOMAIN_ID=7 and ROS_LOCALHOST_ONLY=0 before starting")
 
-        default_controller = os.path.join(get_package_share_directory("mirobot_pick_place"), "config", "poses.yaml")
-        config_path = str(self.get_parameter("controller_config").value) or default_controller
+        default_config = os.path.join(
+            get_package_share_directory("mirobot_pick_place"), "config", "poses.yaml")
+        config_path = str(self.get_parameter("controller_config").value) or default_config
         with open(config_path, "r", encoding="utf-8") as stream:
             self.controller_config = validate_config(yaml.safe_load(stream))
-        expected_sim = self.mode == "simulation"
-        if self.controller_config["simulation_mode"] is not expected_sim:
+        if self.controller_config["simulation_mode"] is not (self.mode == "simulation"):
             raise ValueError("adapter mode and existing controller simulation_mode differ")
-        coord_path = str(self.get_parameter("coordinate_file").value)
-        if not coord_path:
-            if self.mode == "real":
-                raise ValueError("real mode requires an explicitly configured coordinate_file")
-            coord_path = os.path.join(get_package_share_directory("picking_mirobot_adapter"), "config", "robot_poses.example.yaml")
-        self.poses = load_pose_file(coord_path, expected_sim, self.controller_config["workspace_bounds"], self.controller_config["tool_axis_approach"])
-        configured_home = self.controller_config["poses"]["home"]
-        if any(abs(self.poses["home"][axis] - configured_home[axis]) > 1e-9
-               for axis in ("x", "y", "z", "rx", "ry", "rz")):
-            raise ValueError("coordinate file home must match controller_config poses.home")
+        if self.mode == "real":
+            if not self.controller_config["hardware_enable"]:
+                raise ValueError("real mode requires hardware_enable: true")
+            if not self.controller_config["coordinates_confirmed"]:
+                raise ValueError("real mode requires coordinates_confirmed: true")
+            if self.controller_config["tool_axis_approach"] is not True:
+                raise ValueError("real controller config must retain tool_axis_approach: true")
+
+        plan_path = str(self.get_parameter("plan_file").value)
+        if not plan_path:
+            plan_path = os.path.join(
+                get_package_share_directory("picking_mirobot_adapter"),
+                "config", "fixed_robot_plan.yaml")
+        self.poses = load_fixed_plan(plan_path, self.controller_config["workspace_bounds"])
+        if self.mode == "real":
+            configured_home = self.controller_config["poses"]["home"]
+            if any(abs(self.poses["home"][axis] - configured_home[axis]) > 1e-9
+                   for axis in AXES):
+                raise ValueError("real controller config poses.home must match fixed plan HOME")
 
         db_path = os.path.expanduser(str(self.get_parameter("database_path").value))
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
@@ -180,33 +172,85 @@ class MirobotTopicNode(Node):
         self.ledger = Ledger(db_path)
         self.ledger.fail_unfinished_on_restart()
         self.session_id = str(uuid.uuid4())
-        # Serialize small state transitions; network/action waits are futures
-        # polled by the timer, never blocking callbacks.
         self.callback_group = MutuallyExclusiveCallbackGroup()
         self.qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=10,
                               reliability=ReliabilityPolicy.RELIABLE,
                               durability=DurabilityPolicy.VOLATILE)
         self.pub_events = self.create_publisher(String, TOPICS["events"], self.qos)
         self.pub_status = self.create_publisher(String, TOPICS["status"], self.qos)
-        self.sub_command = self.create_subscription(String, TOPICS["command"], self._on_command, self.qos, callback_group=self.callback_group)
-        self.sub_heartbeat = self.create_subscription(String, TOPICS["heartbeat"], self._on_heartbeat, self.qos, callback_group=self.callback_group)
-        self.sub_ack = self.create_subscription(String, TOPICS["ack"], self._on_ack, self.qos, callback_group=self.callback_group)
-        self.sub_cancel = self.create_subscription(String, TOPICS["cancel"], self._on_cancel, self.qos, callback_group=self.callback_group)
-        self.client = ActionClient(self, PickPlace, "/pick_place", callback_group=self.callback_group)
-        self.status_client = self.create_client(Trigger, "/mirobot/status", callback_group=self.callback_group)
+        self.sub_command = self.create_subscription(
+            String, TOPICS["command"], self._on_command, self.qos,
+            callback_group=self.callback_group)
+        self.sub_heartbeat = self.create_subscription(
+            String, TOPICS["heartbeat"], self._on_heartbeat, self.qos,
+            callback_group=self.callback_group)
+        self.sub_ack = self.create_subscription(
+            String, TOPICS["ack"], self._on_ack, self.qos,
+            callback_group=self.callback_group)
+        self.sub_cancel = self.create_subscription(
+            String, TOPICS["cancel"], self._on_cancel, self.qos,
+            callback_group=self.callback_group)
+
         self.heartbeat = None
         self.heartbeat_received_mono = None
         self.heartbeat_problem = "waiting for server heartbeat"
         self.active = None
-        self.pending = None
-        self.state = "initializing"
-        self.detail = "Loading durable state and waiting for server heartbeat"
+        self.controller = None
+        self.controller_ready = self.mode == "simulation"
+        self.startup_fault = ""
+        self._shutdown_event = threading.Event()
+        self._controller_init_done = threading.Event()
+        self._worker_done = queue.SimpleQueue()
         self._last_status = 0.0
         self._last_result_republish = 0.0
-        self._timer = self.create_timer(0.1, self._tick, callback_group=self.callback_group)
         self.state = "fault" if self.ledger.get_fault() else "initializing"
-        self.detail = "Restart left unresolved command outcome; inspect robot and use documented recovery" if self.ledger.get_fault() else self.heartbeat_problem
-        self.get_logger().info(f"Adapter ready for {self.mode} mode; simulation_action_backend={self.simulation_action_backend}")
+        self.detail = ("Restart left unresolved command outcome; inspect robot and use documented recovery"
+                       if self.ledger.get_fault() else self.heartbeat_problem)
+        if self.mode == "real" and not self.ledger.get_fault():
+            self._controller_thread = threading.Thread(
+                target=self._initialize_hardware_controller, daemon=True,
+                name="mirobot-controller-init")
+            self._controller_thread.start()
+        else:
+            self._controller_thread = None
+            self._controller_init_done.set()
+        self._timer = self.create_timer(0.1, self._tick,
+                                       callback_group=self.callback_group)
+        self.get_logger().info(
+            f"Fixed-plan topic adapter started in {self.mode} mode; plan={plan_path}")
+
+    def _initialize_hardware_controller(self):
+        try:
+            # The upstream controller imports the vendor SDK by its top-level
+            # package name. Add the checked-in SDK location when this workspace
+            # is run from source, without changing the legacy controller.
+            candidates = [
+                Path.cwd() / "src" / "Wlkata_Mirobot_Ros2" / "wlkatapython",
+                Path(__file__).resolve().parents[3] / "src"
+                / "Wlkata_Mirobot_Ros2" / "wlkatapython",
+            ]
+            for candidate in candidates:
+                if (candidate / "Mirobot_robot" / "Mirobot_UART.py").is_file():
+                    if str(candidate) not in sys.path:
+                        sys.path.insert(0, str(candidate))
+                    break
+            options = controller_options(self.controller_config)
+            # The approved final plan always uses this explicit feedrate.
+            options["motion_feedrate_mm_min"] = 3000.0
+            controller = MirobotController(
+                logger=self.get_logger(), **options)
+            if self._shutdown_event.is_set():
+                controller.close()
+                return
+            self.controller = controller
+            self.controller_ready = bool(controller.ready)
+            if not self.controller_ready:
+                self.startup_fault = (
+                    "Mirobot is connected but not ready/Idle. No homing or motion was sent.")
+        except Exception as exc:  # reported through status, never auto-retried
+            self.startup_fault = f"Mirobot controller initialization failed: {type(exc).__name__}: {str(exc)[:300]}"
+        finally:
+            self._controller_init_done.set()
 
     def _decode(self, msg, validator, label):
         try:
@@ -226,24 +270,23 @@ class MirobotTopicNode(Node):
             self.heartbeat = None
             self.heartbeat_received_mono = None
             if self.active:
-                self._abort_active("server heartbeat clock skew exceeded 1 second", unknown=True)
+                self._request_abort("server heartbeat clock skew exceeded 1 second")
             return
         old_session = self.heartbeat["server_session_id"] if self.heartbeat else None
         self.heartbeat = value
         self.heartbeat_received_mono = time.monotonic()
         self.heartbeat_problem = ""
         if old_session and old_session != value["server_session_id"] and self.active:
-            self._abort_active("server session changed during command", unknown=True)
+            self._request_abort("server session changed during command")
 
     def _on_ack(self, msg):
         ack = self._decode(msg, validate_ack, "result ack")
         if ack and self.ledger.acknowledge(ack):
             self.get_logger().info(f"Result acknowledged for {ack['command_id']}")
-            if self.ledger.pending_result_count() == 0 and self.state != "fault":
-                self.state = "ready" if self._heartbeat_fresh() else "initializing"
 
     def _heartbeat_fresh(self):
-        return (self.heartbeat is not None and self.heartbeat_received_mono is not None
+        return (self.heartbeat is not None
+                and self.heartbeat_received_mono is not None
                 and time.monotonic() - self.heartbeat_received_mono <= 5.0)
 
     def _on_command(self, msg):
@@ -251,8 +294,6 @@ class MirobotTopicNode(Node):
         if command is None:
             return
         existing = self.ledger.command_row(command["command_id"])
-        # A retry must be recognized before current admission guards, including
-        # the outstanding-result gate, so it can retrieve its saved event.
         if existing is None:
             reason = self._admission_error(command)
             if reason:
@@ -260,97 +301,136 @@ class MirobotTopicNode(Node):
                 return
         outcome, accepted, result = self.ledger.get_or_create(command)
         if outcome == "conflict":
-            self.get_logger().error("Protocol error: command_id reused with changed content; original record retained")
+            self.get_logger().error(
+                "Protocol error: command_id reused with changed content; original record retained")
             return
         if outcome == "duplicate":
             self._publish_event(result if result else accepted)
             return
+
         self._publish_event(accepted)
         now = time.time()
-        monotonic_remaining = command["expires_at"] - now - 1.0
+        remaining = command["expires_at"] - now - 1.0
+        deadline = time.monotonic() + min(self.plan_timeout_sec, remaining)
         self.ledger.mark_running(command["command_id"])
-        self.pending = {
+        record = {
             "command": command,
-            "deadline_mono": time.monotonic() + monotonic_remaining,
-            "accepted_mono": time.monotonic(),
-            "phase": "preflight",
-            "service_future": None,
-            "goal_future": None,
-            "goal_handle": None,
-            "result_future": None,
-            "timeout_mono": None,
-            "cancel_reason": None,
+            "deadline_mono": deadline,
+            "cancel_event": threading.Event(),
+            "terminal_recorded": False,
+            "worker": None,
         }
+        self.active = record
         self.state = "busy"
-        self.detail = "Accepted; checking /mirobot/status and /pick_place availability"
+        self.detail = "Accepted; running the fixed local 10-step plan"
+        record["worker"] = threading.Thread(
+            target=self._run_plan_worker, args=(record,), daemon=True,
+            name=f"mirobot-plan-{command['command_id'][:8]}")
+        record["worker"].start()
 
     def _admission_error(self, command):
         age = (time.monotonic() - self.heartbeat_received_mono
                if self.heartbeat_received_mono is not None else float("inf"))
-        return command_rejection_reason(
+        reason = command_rejection_reason(
             command, self.mode, self.heartbeat, age, self.ledger.get_fault(),
-            bool(self.active or self.pending), self.ledger.pending_result_count(),
-            time.time(),
-        )
+            bool(self.active), self.ledger.pending_result_count(), time.time())
+        if reason:
+            return reason
+        if not self._controller_init_done.is_set():
+            return "Mirobot controller is still initializing"
+        if self.startup_fault:
+            return self.startup_fault
+        if not self.controller_ready:
+            return "Mirobot controller is not ready; explicit operator initialization is required"
+        return ""
+
+    def _run_plan_worker(self, record):
+        command = record["command"]
+        try:
+            if self.mode == "real":
+                controller = self.controller
+                if controller is None or not controller.ready:
+                    raise RuntimeError(
+                        "Mirobot is not ready/Idle; refusing to start the fixed plan")
+            else:
+                controller = None
+            steps = build_plan(self.poses)
+            for index, step in enumerate(steps, start=1):
+                self._check_worker_abort(record)
+                self.get_logger().info(f"[{index}/10] {step.name}")
+                if self.mode == "real":
+                    step.execute(controller, pumps=True)
+                    if not controller.ready:
+                        raise RuntimeError(
+                            f"Controller readiness lost after step {index}; physical state unconfirmed")
+                else:
+                    # Simulation is a pure software stub: never instantiate or
+                    # call the serial controller in this mode.
+                    time.sleep(0.05)
+                self._check_worker_abort(record)
+            self._worker_done.put((record, True,
+                                   "Fixed 10-step plan completed; controller verified each operation.",
+                                   False))
+        except Exception as exc:
+            detail = f"Fixed plan failed: {type(exc).__name__}: {str(exc)[:350]}"
+            unknown = self.mode == "real"
+            if unknown:
+                detail += "; physical stop/state is unconfirmed; no automatic retry or return movement."
+            self._worker_done.put((record, False, detail[:500], unknown))
+
+    @staticmethod
+    def _check_worker_abort(record):
+        if record["cancel_event"].is_set():
+            raise RuntimeError("execution cancelled at a plan-step boundary")
+        if time.monotonic() >= record["deadline_mono"]:
+            raise TimeoutError("local plan deadline reached")
 
     def _on_cancel(self, msg):
         cancel = self._decode(msg, validate_cancel, "cancel")
-        if not cancel:
-            return
-        active = self.active or self.pending
-        if cancel_matches(cancel, active):
-            self._abort_active("server cancel: " + cancel["reason"], unknown=True)
+        if cancel and cancel_matches(cancel, self.active):
+            self._request_abort("server cancel: " + cancel["reason"])
 
-    def _abort_active(self, reason, *, unknown):
-        active = self.active or self.pending
-        if not active:
+    def _request_abort(self, reason):
+        record = self.active
+        if not record:
             return
-        active["cancel_reason"] = reason
-        handle = active.get("goal_handle")
-        if handle is not None:
-            try:
-                active["cancel_future"] = handle.cancel_goal_async()
-            except Exception as exc:  # cancellation transport itself can fail
-                reason += f"; cancel request raised {type(exc).__name__}"
+        record["cancel_event"].set()
+        unknown = self.mode == "real"
+        if not record["terminal_recorded"]:
+            if unknown:
+                detail = (reason + "; cancellation is checked between plan steps; a current serial operation "
+                          "may continue and physical stop is unconfirmed.")[:500]
+            else:
+                detail = reason + "; software simulation only, no physical robot command was sent."
+            event = self.ledger.finish(record["command"], False, detail,
+                                       unknown=unknown)
+            record["terminal_recorded"] = True
+            self._publish_event(event)
         if unknown:
             self.ledger.latch_fault()
-        event = self.ledger.finish(active["command"], False,
-                                   reason + "; cancellation requested where possible; physical stop is unconfirmed.", unknown=unknown)
-        self._publish_event(event)
-        self.active = None
-        self.pending = None
-        self.state = "fault" if unknown else "initializing"
-        self.detail = reason + "; physical stop is unconfirmed"
+            self.state = "fault"
+            self.detail = reason + "; physical stop is unconfirmed"
+        else:
+            self.state = "initializing"
+            self.detail = reason + "; simulation cancelled"
+        self.get_logger().error(self.detail)
 
-    def _complete(self, success, detail):
-        active = self.active or self.pending
-        if not active:
+    def _finish_worker(self, record, success, detail, unknown):
+        if self.active is not record:
             return
-        event = self.ledger.finish(active["command"], success, detail)
-        self._publish_event(event)
+        if not record["terminal_recorded"]:
+            event = self.ledger.finish(record["command"], success, detail,
+                                       unknown=unknown)
+            record["terminal_recorded"] = True
+            self._publish_event(event)
+            if unknown:
+                self.ledger.latch_fault()
         self.active = None
-        self.pending = None
-        if not success and ("unknown" in detail.lower() or "timeout" in detail.lower()):
-            self.ledger.latch_fault()
-        self.state = "fault" if self.ledger.get_fault() else ("ready" if self._heartbeat_fresh() else "initializing")
+        if self.ledger.get_fault():
+            self.state = "fault"
+        else:
+            self.state = "ready" if self._heartbeat_fresh() and self.ledger.pending_result_count() == 0 else "initializing"
         self.detail = detail[:500]
-
-    def _send_goal(self, record):
-        goal = PickPlace.Goal()
-        goal.start = True
-        for name in ("pick", "place"):
-            for axis in ("x", "y", "z", "rx", "ry", "rz"):
-                setattr(goal, f"{name}_{axis}", self.poses[name][axis])
-        goal.approach_height = self.poses["approach_height"]
-        ros_uuid = RosUUID()
-        ros_uuid.uuid = list(uuid.UUID(record["command"]["command_id"]).bytes)
-        record["goal_future"] = self.client.send_goal_async(goal, goal_uuid=ros_uuid)
-        record["phase"] = "goal_response"
-        remaining = record["deadline_mono"] - time.monotonic()
-        record["timeout_mono"] = time.monotonic() + min(self.action_timeout_sec, remaining) - 0.5
-        self.active = record
-        self.pending = None
-        self.detail = "PickPlace action goal sent"
 
     def _tick(self):
         now_mono = time.monotonic()
@@ -361,86 +441,48 @@ class MirobotTopicNode(Node):
             for event in self.ledger.unacked_results():
                 self._publish_event(event)
             self._last_result_republish = now_mono
-        record = self.active or self.pending
-        if record:
+
+        if self.mode == "real" and self._controller_init_done.is_set() and self.startup_fault:
+            self.state = "fault"
+            self.detail = self.startup_fault
+        if self.active:
             age = (now_mono - self.heartbeat_received_mono
                    if self.heartbeat_received_mono is not None else float("inf"))
-            reason = active_safety_abort_reason(record, self.heartbeat, age, now_mono)
-            if reason:
-                self._abort_active(reason, unknown=True)
-                return
-        if self.active and self.active.get("timeout_mono") is not None and now_mono >= self.active["timeout_mono"]:
-            self._abort_active("PickPlace action timed out before result reporting margin", unknown=True)
-            return
-        if self.pending:
-            self._progress_preflight(self.pending)
-        if self.active:
-            self._progress_action(self.active)
-        if not self.active and not self.pending and self.state not in ("fault", "busy"):
-            self.state = "ready" if self._heartbeat_fresh() and self.ledger.pending_result_count() == 0 else "initializing"
-            if not self.heartbeat_problem and not self._heartbeat_fresh():
-                self.detail = "waiting for recent server heartbeat"
+            command = self.active["command"]
+            abort_reason = ""
+            if self.heartbeat is None or age > 5.0:
+                abort_reason = "server heartbeat lost for more than 5 seconds"
+            elif self.heartbeat["server_session_id"] != command["server_session_id"]:
+                abort_reason = "server heartbeat session changed"
+            elif now_mono >= self.active["deadline_mono"]:
+                abort_reason = "local command/plan deadline reached"
+            if abort_reason:
+                self._request_abort(abort_reason)
 
-    def _progress_preflight(self, record):
-        if not self.client.server_is_ready():
-            self._complete(False, "PickPlace action server /pick_place is unavailable")
-            return
-        if record["phase"] == "preflight":
-            if not self.status_client.service_is_ready():
-                self._complete(False, "/mirobot/status service is unavailable")
-                return
-            record["service_future"] = self.status_client.call_async(Trigger.Request())
-            record["phase"] = "status_response"
-            return
-        future = record.get("service_future")
-        if not future or not future.done():
-            return
-        try:
-            response = future.result()
-        except Exception as exc:
-            self._complete(False, f"/mirobot/status request failed: {type(exc).__name__}")
-            return
-        expected = self.mode
-        if not response.success or f"mode={expected}" not in response.message:
-            self._complete(False, f"Mirobot not ready or controller mode mismatch: {response.message[:400]}")
-            return
-        if self.mode == "simulation" and not self.simulation_action_backend:
-            self._complete(True, "Simulation stub completed; no ROS action, serial, or robot controller was called.")
-            return
-        try:
-            self._send_goal(record)
-        except Exception as exc:
-            self._complete(False, f"Could not send PickPlace goal: {type(exc).__name__}: {str(exc)[:300]}")
-
-    def _progress_action(self, record):
-        if record["phase"] == "goal_response":
-            future = record["goal_future"]
-            if not future.done():
-                return
+        while True:
             try:
-                handle = future.result()
-            except Exception as exc:
-                self._complete(False, f"Action goal response failed: {type(exc).__name__}")
-                return
-            if not handle.accepted:
-                self._complete(False, "PickPlace action goal was rejected")
-                return
-            record["goal_handle"] = handle
-            record["result_future"] = handle.get_result_async()
-            record["phase"] = "action_result"
-        future = record.get("result_future")
-        if not future or not future.done():
-            return
-        try:
-            wrapped = future.result()
-            result = wrapped.result
-            success = action_result_success(wrapped.status, result.success)
-            detail = result.message if result.message else ("PickPlace action succeeded" if success else f"PickPlace action ended with status {wrapped.status}")
-            if not success:
-                detail = f"PickPlace action failed (status={wrapped.status}, success={result.success}): {detail}"
-            self._complete(success, detail)
-        except Exception as exc:
-            self._abort_active(f"PickPlace result unresolved: {type(exc).__name__}", unknown=True)
+                record, success, detail, unknown = self._worker_done.get_nowait()
+            except queue.Empty:
+                break
+            self._finish_worker(record, success, detail, unknown)
+
+        if self.ledger.get_fault():
+            self.state = "fault"
+        elif not self.active:
+            if self.mode == "real" and self.startup_fault:
+                self.state = "fault"
+                self.detail = self.startup_fault
+            elif not self._heartbeat_fresh() or self.ledger.pending_result_count():
+                self.state = "initializing"
+                if not self.heartbeat_problem:
+                    self.detail = "waiting for recent server heartbeat or result acknowledgement"
+            elif self.mode == "real" and (not self._controller_init_done.is_set()
+                                          or not self.controller_ready):
+                self.state = "initializing"
+                self.detail = self.startup_fault or "waiting for Mirobot controller readiness"
+            else:
+                self.state = "ready"
+                self.detail = "ready to execute the fixed local plan"
 
     def _publish_event(self, event):
         message = String()
@@ -451,9 +493,9 @@ class MirobotTopicNode(Node):
         status = {
             "v": 1, "device_id": "mirobot_laptop", "device": "robot",
             "session_id": self.session_id, "mode": self.mode,
-            "state": self.state, "active_command_id": (
-                (self.active or self.pending)["command"]["command_id"] if (self.active or self.pending) else None
-            ), "detail": str(self.detail)[:500], "sent_at": time.time(),
+            "state": self.state,
+            "active_command_id": self.active["command"]["command_id"] if self.active else None,
+            "detail": str(self.detail)[:500], "sent_at": time.time(),
         }
         message = String()
         message.data = canonical_json(status)
@@ -461,8 +503,18 @@ class MirobotTopicNode(Node):
 
     def destroy_node(self):
         try:
-            if self.active or self.pending:
-                self._abort_active("adapter shutdown while command active; outcome unconfirmed", unknown=True)
+            self._shutdown_event.set()
+            if self.active:
+                self._request_abort("adapter shutdown during plan; outcome unconfirmed")
+                worker = self.active.get("worker")
+                if worker:
+                    worker.join(timeout=0.2)
+            # Do not close the serial port underneath an in-flight blocking
+            # controller operation. Process shutdown will release it if needed.
+            if self.controller is not None and not (
+                    self.active and self.active.get("worker")
+                    and self.active["worker"].is_alive()):
+                self.controller.close()
             self.ledger.close()
             fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
             self._lock_file.close()

@@ -8,10 +8,8 @@ from picking_mirobot_adapter.protocol import (
     ProtocolError, parse_json_object, validate_ack, validate_command,
     validate_heartbeat,
 )
-from action_msgs.msg import GoalStatus
 from picking_mirobot_adapter.adapter_node import (
-    action_result_success, active_safety_abort_reason, cancel_matches,
-    command_rejection_reason,
+    cancel_matches, command_rejection_reason,
 )
 
 
@@ -86,24 +84,6 @@ def test_admission_rejects_mode_skew_expiry_session_and_pending_result():
     expiring["expires_at"] = now + 2
     assert "2 seconds" in command_rejection_reason(expiring, "simulation", hb, 0, False, False, 0, now)
     assert "awaiting" in command_rejection_reason(cmd, "simulation", hb, 0, False, False, 1, now)
-
-
-def test_only_action_succeeded_plus_true_result_is_success():
-    assert action_result_success(GoalStatus.STATUS_SUCCEEDED, True)
-    assert not action_result_success(GoalStatus.STATUS_SUCCEEDED, False)
-    assert not action_result_success(GoalStatus.STATUS_ABORTED, True)
-    assert not action_result_success(GoalStatus.STATUS_CANCELED, True)
-
-
-def test_active_heartbeat_session_and_expiry_guards():
-    cmd = command()
-    record = {"command": cmd, "deadline_mono": 10.0}
-    heartbeat = {"server_session_id": cmd["server_session_id"]}
-    assert active_safety_abort_reason(record, heartbeat, 5.01, 9.0)
-    assert "session changed" in active_safety_abort_reason(
-        record, {"server_session_id": str(uuid.uuid4())}, 0.1, 9.0)
-    assert "expired" in active_safety_abort_reason(record, heartbeat, 0.1, 10.0)
-    assert active_safety_abort_reason(record, heartbeat, 0.1, 9.0) == ""
 
 
 def test_cancel_requires_command_server_session_and_device_match():

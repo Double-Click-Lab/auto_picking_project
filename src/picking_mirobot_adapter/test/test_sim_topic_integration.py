@@ -1,4 +1,4 @@
-"""Opt-in end-to-end test of the adapter against the existing sim action server."""
+"""Opt-in DDS integration test of the fixed-plan software simulation stub."""
 
 import json
 import os
@@ -11,16 +11,14 @@ import pytest
 
 @pytest.mark.skipif(os.environ.get("MIROBOT_RUN_SIM_INTEGRATION") != "1",
                     reason="set MIROBOT_RUN_SIM_INTEGRATION=1 to start ROS simulation processes")
-def test_topic_command_runs_existing_sim_pick_place_action_and_acks_result(tmp_path):
+def test_topic_command_runs_fixed_plan_stub_and_acks_result(tmp_path):
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
     from std_msgs.msg import String
 
     env = dict(os.environ, ROS_DOMAIN_ID="7", ROS_LOCALHOST_ONLY="0")
-    server_log = open(tmp_path / "action_server.log", "w", encoding="utf-8")
     adapter_log = open(tmp_path / "adapter.log", "w", encoding="utf-8")
-    server = subprocess.Popen(["ros2", "launch", "mirobot_pick_place", "pick_place.launch.py"], env=env, stdout=server_log, stderr=subprocess.STDOUT)
     adapter = None
     node = None
     try:
@@ -28,7 +26,7 @@ def test_topic_command_runs_existing_sim_pick_place_action_and_acks_result(tmp_p
         db = str(tmp_path / "adapter.sqlite3")
         adapter = subprocess.Popen([
             "ros2", "run", "picking_mirobot_adapter", "mirobot_topic_node", "--ros-args",
-            "-p", "mode:=simulation", "-p", "simulation_action_backend:=true",
+            "-p", "mode:=simulation",
             "-p", f"database_path:={db}",
         ], env=env, stdout=adapter_log, stderr=subprocess.STDOUT)
         rclpy.init()
@@ -81,13 +79,12 @@ def test_topic_command_runs_existing_sim_pick_place_action_and_acks_result(tmp_p
             node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-        for process in (adapter, server):
+        for process in (adapter,):
             if process is not None:
                 process.terminate()
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.kill()
-        server_log.close()
         adapter_log.close()
 

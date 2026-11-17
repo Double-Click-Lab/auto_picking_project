@@ -1,0 +1,9 @@
+# Fixed local plan requested for the Mirobot topic adapter.
+# Coordinates are XYZ mm and RX/RY/RZ degrees, in the existing controller frame.
+motion_feedrate_mm_min: 3000
+tool_axis_approach: true
+approach_height_mm: 60
+
+home: {x: 198.670, y: 0.000, z: 230.720, rx: 0.000, ry: 0.000, rz: 0.000}
+pick: {x: 277.653, y: 0.000, z: 101.511, rx: 0.000, ry: -30.005, rz: 0.000}
+place: {x: 98.659, y: -200.040, z: 128.754, rx: 0.000, ry: 0.000, rz: 0.000}

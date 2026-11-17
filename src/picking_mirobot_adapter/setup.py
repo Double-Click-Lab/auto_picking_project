@@ -18,7 +18,7 @@ setup(
     zip_safe=True,
     maintainer='Double Click Lab',
     maintainer_email='bkay0829@gmail.com',
-    description='Reliable topic-to-action Mirobot adapter',
+    description='Reliable topic-to-fixed-plan Mirobot adapter',
     license='MIT',
     entry_points={'console_scripts': [
         'mirobot_topic_node = picking_mirobot_adapter.adapter_node:main',

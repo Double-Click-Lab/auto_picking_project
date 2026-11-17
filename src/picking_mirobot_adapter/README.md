@@ -1,88 +1,109 @@
 # picking_mirobot_adapter
 
-ROS 2 Humble topic adapter for the Mirobot notebook. It accepts the v1 robot
-command topic and delegates approved motion to the existing `/pick_place`
-action. It does not control the camera or linear motor.
+ROS 2 Humble node for the Mirobot notebook. The server sends a command on a
+ROS topic. The adapter runs one fixed, local 10-step pick-and-place plan; the
+command does not contain coordinates. This adapter does not use `/pick_place`
+or `/mirobot/status`, and it never controls the camera or linear motor.
 
-## Safety and current behavior
+## Fixed plan
 
-The default launch runs in `simulation` mode with a non-moving stub backend.
-That backend checks `/mirobot/status` and `/pick_place` availability, then
-records a simulated success without sending an action goal, opening serial, or
-calling a controller. `simulation_action_backend:=true` is an explicit opt-in
-for integration testing against the existing simulation action server. Real
-mode requires a separately configured, safety-enabled action server and a
-confirmed coordinate file. No physical robot test is part of this package's
-build or test commands.
+The plan is loaded once from `config/fixed_robot_plan.yaml`. Units follow the
+existing Mirobot controller: XYZ in millimetres and RX/RY/RZ in degrees.
+Approach distance is 60 mm along the tool axis, calculated from the saved RPY;
+feedrate is 3000 mm/min. The executed sequence is always:
 
-Do not run this adapter alongside any other process that controls the same
-Mirobot, including an HTTP bridge, `camera_mirobot_sim.py`, another action
-server, or a second adapter instance. The SQLite process lock rejects a second
-adapter using the same database. Keep the existing action server as the only
-robot controller.
+1. Move to configured HOME coordinates.
+2. Move to PICK_APPROACH.
+3. Move to PICK.
+4. Vacuum ON.
+5. Move back to PICK_APPROACH.
+6. Move to PLACE_APPROACH.
+7. Move to PLACE.
+8. Vacuum OFF.
+9. Move back to PLACE_APPROACH.
+10. Move to configured HOME coordinates.
 
-## Existing ROS interfaces
+The robot command payload's item and bin are metadata only in this version;
+they do not select alternate coordinates. Each unit is one command with
+`quantity: 1`; the server must create a fresh `command_id` for another item.
+The local fixed plan is not automatically inferred from camera pixels, marker
+IDs, or motor positions.
 
-The adapter uses the repository's existing
-`mirobot_pick_place_interfaces/action/PickPlace` at `/pick_place`. Its goal has
-`start`, pick and place XYZ/RX/RY/RZ fields, and `approach_height`; its result
-has `success` and `message`. Before every command, it calls the existing
-`std_srvs/srv/Trigger` service `/mirobot/status` and checks `success` plus the
-machine-readable `mode=simulation|real` in its message. The action server's
-status message was extended with that mode label; readiness behavior was not
-changed. Status checking never initializes, homes, or moves the robot.
+## Safety and operation
 
-For hardware, retain the existing controller's `simulation_mode`,
-`hardware_enable`, `coordinates_confirmed`, `workspace_bounds`,
-`homing_enable`, and explicit initialization procedure. The adapter validates
-the selected controller config with the existing `validate_config` function.
-It never bypasses that controller or writes serial commands itself.
+Default mode is `simulation`. It runs a software-only stub and does not import
+or instantiate the serial controller. A command whose `mode` differs from the
+node mode is rejected. Real mode requires an explicit hardware controller
+configuration accepted by the existing `validate_config`: set
+`simulation_mode: false`, `hardware_enable: true`,
+`coordinates_confirmed: true`, measured `workspace_bounds`,
+`tool_axis_approach: true`, and `poses.home` matching the fixed-plan HOME.
+The operator must explicitly home the arm before starting this adapter, then
+close the homing/teaching process. If this adapter is already holding the
+serial port, stop it first, home using the existing teaching procedure, quit
+that process, then restart this adapter. The controller still checks
+readiness, workspace, ACK, and final coordinates. Real startup never homes
+automatically. If it sees Alarm/not-Idle, it reports fault and refuses
+commands.
 
-## Protocol v1
+No command causes automatic retry, an emergency stop, pump reset, or return
+movement after a failure. Cancel, heartbeat loss, and deadline expiry set a
+local cancellation flag checked between plan steps. A serial operation already
+in progress can continue until its controller call returns; the event and
+status explicitly say that physical stop is unconfirmed. Inspect the robot,
+cup, held-object state, and workspace before using the documented recovery.
+The default local plan deadline is 45 seconds; server command expiry must
+leave enough time for the complete run and reporting. Adjust both ends only
+after observing the plan duration.
 
-All inter-notebook data is `std_msgs/msg/String` containing a UTF-8 JSON
-object. Every publisher and subscriber uses KEEP_LAST depth 10, RELIABLE,
-VOLATILE QoS. ROS domain is 7 and `ROS_LOCALHOST_ONLY=0`.
+Run only one process that controls this robot. Do not run this adapter beside
+the legacy action server, an HTTP bridge, `camera_mirobot_sim.py`, the teaching
+terminal, or another direct serial controller. For real mode, keep the
+`Wlkata_Mirobot_Ros2/wlkatapython` SDK on `PYTHONPATH` if it is not already
+available in the environment.
 
-| Topic | Direction | Use |
+## Topic contract v1
+
+All messages are `std_msgs/msg/String` containing a UTF-8 JSON object. QoS is
+KEEP_LAST depth 10, RELIABLE, VOLATILE. Use `ROS_DOMAIN_ID=7` and
+`ROS_LOCALHOST_ONLY=0` on all notebooks.
+
+| Topic | Direction | Meaning |
 | --- | --- | --- |
-| `/picking/robot/command` | server → robot notebook | `device=robot`, `action=pick_and_place` |
-| `/picking/device_events` | robot notebook → server | accepted and final result events |
-| `/picking/device_status` | robot notebook → server | one-second robot status |
-| `/picking/server_heartbeat` | server → devices | one-second server session heartbeat |
+| `/picking/robot/command` | server → Mirobot | `device=robot`, `action=pick_and_place` |
+| `/picking/device_events` | Mirobot → server | accepted and final result |
+| `/picking/device_status` | Mirobot → server | one-second status |
+| `/picking/server_heartbeat` | server → devices | one-second session heartbeat |
 | `/picking/result_ack` | server → devices | confirm a persisted final result |
-| `/picking/cancel` | server → device | cancel the matching active command |
+| `/picking/cancel` | server → Mirobot | cancel the matching active command |
 
-The adapter validates exact protocol field names and types, canonical UUIDs,
-quantity exactly integer `1`, and `destination_id == order_id`. Robot commands
-do not carry motion coordinates: the adapter reads its fixed local pose YAML
-once at startup. It checks that all six axes are finite and that
-`approach_height` is positive; existing workspace and approach calculations
-are applied. The robot action goal uses the incoming command UUID as its ROS
-goal UUID. Success requires both action status `SUCCEEDED` and
-`PickPlace.Result.success == true`.
+The exact JSON schemas and validation live in `picking_mirobot_adapter/protocol.py`.
+The node checks canonical UUIDs, exact field sets/types, quantity exactly 1,
+and `destination_id == order_id`. The fixed local plan is loaded and checked
+at startup, including finite coordinates, tool-axis approach points, and real
+mode workspace bounds.
 
-The device checks heartbeat clock skew (≤1 s), recency (≤5 s), matching server
-session, and command expiry (>2 s remaining). On acceptance it converts
-`expires_at - time.time() - 1 s` into a monotonic deadline. A heartbeat gap,
-session change, expiry, or action timeout requests the existing action cancel
-where possible and records failure with the stop state explicitly unconfirmed.
-An action cancel topic is not an emergency stop.
+The server heartbeat must match the command session, be no older than 5
+seconds, and have clock skew no more than 1 second. A new command must have
+more than 2 seconds until expiry. On acceptance, the node converts the
+remaining expiry (minus 1 second) to a monotonic deadline and caps it at
+`plan_timeout_sec` (45 seconds by default). Heartbeat loss/session change or
+deadline expiry records a failed, outcome-uncertain result and latches fault.
 
 ## Durable delivery and recovery
 
-The SQLite ledger stores canonical command JSON before starting work. It
-deduplicates command IDs, logs same-ID/different-content protocol errors
-without replacing the original, and stores the full final event including its
-event UUID before publishing. Unacknowledged results are resent once per
-second across process restarts. An acknowledgement ends retries only when
-server session, command, device, event UUID and `accepted=true` all match.
-Another new command is not accepted until the previous result is acknowledged.
+SQLite records normalized command content before execution and stores the
+complete final event with its event UUID. Same-ID retries reissue only the
+saved accepted/result event. Reuse of an ID with changed content is logged as
+a protocol error without replacing the original. Results are resent every
+second until an exact acknowledgement matches server session, command, device,
+event UUID, and `accepted: true`. A new command is blocked while any result is
+unacknowledged.
 
-If the process restarts with an unresolved accepted command, the adapter
-records an outcome-unknown failure, never retries the action, and latches
-`fault`. After acknowledging all outstanding events and physically inspecting
-the robot, stop the adapter and explicitly clear that latch:
+If the process restarts while a command has no final event, it records a
+failed outcome-unknown result and never reruns that command. To clear a fault,
+first acknowledge pending results, stop the adapter, physically inspect the
+robot and work area, then run:
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -92,11 +113,10 @@ ros2 run picking_mirobot_adapter picking_mirobot_recover \
   --confirm-physical-inspection
 ```
 
-This command only updates the local ledger; it sends no ROS or robot command.
-Then restart the adapter. Do not clear the fault while robot position,
-held-object state, or action completion is unknown.
+This changes only the local ledger; it does not publish a topic or send a
+robot command.
 
-## Build and default launch
+## Build and launch
 
 ```bash
 cd ~/ros2_ws
@@ -108,71 +128,55 @@ export ROS_LOCALHOST_ONLY=0
 ros2 launch picking_mirobot_adapter mirobot_topic.launch.py
 ```
 
-Start the existing action server separately when testing the adapter. Its
-controller configuration must match the adapter's `controller_config` mode
-and HOME. Keep that server in simulation for the default setup.
-
-For action-level simulation integration only, run the adapter with:
-
-```bash
-ros2 run picking_mirobot_adapter mirobot_topic_node --ros-args \
-  -p mode:=simulation -p simulation_action_backend:=true \
-  -p controller_config:=/path/to/simulation_poses.yaml \
-  -p coordinate_file:=/path/to/simulation_robot_poses.yaml
-```
-
-Use `config/robot_poses.example.yaml` only with the no-action stub. It contains
-example values and is not a real robot calibration. To configure actual
-coordinates, create a separate local YAML with the same keys `home`, `pick`,
-`place` (each x/y/z/rx/ry/rz), and `approach_height`, plus
-`simulation_only: false` and `coordinates_confirmed: true`. Supply it through
-`coordinate_file`; never edit the example into apparent real coordinates.
-Also supply the same hardware-enabled controller YAML to both the existing
-action server and this adapter. Real mode is not launched by the provided
-launch file.
-
-`action_timeout_sec` defaults to 45 seconds. Set the server-side command
-expiry longer than the expected action duration plus clock/reporting margin;
-otherwise the adapter will cancel locally at command expiry and report
-failure. All three notebooks need synchronized clocks and the same LAN.
-
-## Non-moving communication check
-
-Inspect topics without publishing commands:
+The launch defaults to simulation. Hardware-free status checks:
 
 ```bash
 ros2 topic list | grep '^/picking/'
 ros2 topic echo /picking/device_status std_msgs/msg/String
+ros2 topic echo /picking/server_heartbeat std_msgs/msg/String
 ros2 topic info /picking/robot/command --verbose
 ```
 
-Status should appear once per second with `device_id=mirobot_laptop`. To check
-the server heartbeat, run `ros2 topic echo /picking/server_heartbeat
-std_msgs/msg/String` on the robot notebook. Do not send a hand-written real
-command with `ros2 topic pub`.
+To explicitly start real mode, provide a separately reviewed controller YAML
+with the safety values described above. Its measured workspace bounds must
+contain HOME, PICK, PLACE, and both computed tool-axis approaches. For
+example, after preparing that file:
+
+```bash
+export PYTHONPATH="$PWD/src/mirobot_pick_place:$PWD/src/Wlkata_Mirobot_Ros2/wlkatapython:$PYTHONPATH"
+ros2 run picking_mirobot_adapter mirobot_topic_node --ros-args \
+  -p mode:=real \
+  -p controller_config:=/absolute/path/to/verified_mirobot_controller.yaml \
+  -p plan_file:="$PWD/src/picking_mirobot_adapter/config/fixed_robot_plan.yaml"
+```
+
+This launch command is intentionally not run as part of build/test. Do not
+start the legacy `/pick_place` action server, HTTP bridge, or teaching
+terminal at the same time. Starting real mode opens the serial port and reads
+status but does not send homing, movement, or pump commands until a valid
+server topic command arrives.
 
 ## Simulation command publisher
 
-The one-shot publisher generates a new `command_id`, `order_id`, and current
-timestamps on each run. It only emits `mode=simulation`; pass the current
-server session UUID shown by the server heartbeat:
+The one-shot test publisher emits only a simulation command and creates new
+UUIDs/timestamps each run. Use the current session UUID from the server
+heartbeat:
 
 ```bash
 ros2 run picking_mirobot_adapter picking_sim_test_publisher \
   --server-session-id <server_session_uuid> --item-id demo --bin A
 ```
 
-This publisher does not claim completion. Completion is reported only by the
-adapter event after its selected stub or explicit simulation action backend.
-The server must process the result and publish the exact `result_ack` before
-another new command can be accepted.
+It requests the same fixed plan in software simulation. A final success event
+comes only from the simulation worker after its plan steps complete; this is
+not a physical success claim. The server must publish the exact result ack
+before another new command can be admitted.
 
-## Tests
+## Tests and integration boundary
 
-Hardware-free unit tests exercise strict JSON/schema validation, command
-admission (mode, session, heartbeat skew/age, expiry and result gating),
-duplicate and changed command IDs, durable result acknowledgement, restart
-outcome uncertainty, operator recovery gating, and pose validation:
+Hardware-free tests cover protocol validation, persistence, duplicate IDs,
+result acknowledgements, restart uncertainty, recovery gating, pose loading,
+the ten-step plan, and its software-only execution path. Run them with:
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -183,11 +187,16 @@ ROS_DOMAIN_ID=7 ROS_LOCALHOST_ONLY=0 colcon test \
   --python-testing pytest --packages-select picking_mirobot_adapter
 ```
 
-The optional action integration test is separate from the unit tests and can
-be requested with `MIROBOT_RUN_SIM_INTEGRATION=1 python3 -m pytest -q
-src/picking_mirobot_adapter/test/test_sim_action_integration.py`. It starts
-the existing simulation action server and uses `simulation_action_backend:=true`.
-The provided example is a stub-only simulation configuration. The three
-notebooks have not been jointly exercised here; the server notebook still
-needs to implement the matching topic contract, result persistence/ack,
-heartbeat, and end-to-end workflow tests. No hardware movement test was run.
+The optional DDS topic integration check starts only the simulation adapter
+and needs a working local ROS 2 DDS network:
+
+```bash
+MIROBOT_RUN_SIM_INTEGRATION=1 python3 -m pytest -q \
+  src/picking_mirobot_adapter/test/test_sim_topic_integration.py
+```
+
+The server notebook must publish the matching command, heartbeat, cancel, and
+result-ack topics and persist accepted/result events. Camera/motor notebooks
+and the server are separate computers; successful local builds do not confirm
+three-notebook DDS connectivity. No real Mirobot movement test is performed
+by this package's build or test commands.

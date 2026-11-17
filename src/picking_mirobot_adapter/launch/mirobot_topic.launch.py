@@ -14,8 +14,7 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'mode': 'simulation',
-                'simulation_action_backend': False,
-                'action_timeout_sec': 45.0,
+                'plan_timeout_sec': 45.0,
             }],
         ),
     ])
