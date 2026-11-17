@@ -1,0 +1,37 @@
+{
+  "repository": "Double-Click-Lab/auto_picking_project",
+  "documentation_branch": "Codex",
+  "checked_on": "2026-11-17",
+  "timezone": "Asia/Seoul",
+  "base_branch": "server",
+  "base_commit": "008e80aa05bd7d52680f7d70c5d9421b3e74289f",
+  "scope": "Three notebook preparation, simulation startup, readiness, waiting, recovery and hardware transition prerequisites. Documentation only.",
+  "sources": {
+    "server": {
+      "commit": "008e80aa05bd7d52680f7d70c5d9421b3e74289f",
+      "default_path": "~/server",
+      "reference": "https://github.com/Double-Click-Lab/auto_picking_project/blob/008e80aa05bd7d52680f7d70c5d9421b3e74289f/docs/first_connection.md"
+    },
+    "mirobot": {
+      "commit": "94ff136d10d797f8bedd7c1a98efae58b6054327",
+      "default_path": "~/ros2_ws",
+      "reference": "https://github.com/Double-Click-Lab/auto_picking_project/blob/94ff136d10d797f8bedd7c1a98efae58b6054327/src/picking_mirobot_adapter/README.md"
+    },
+    "camera": {
+      "commit": "a61b5945f213b1ab9871a32d298b62f3f60d59fe",
+      "default_path": "~/aruco_project",
+      "reference": "https://github.com/Double-Click-Lab/auto_picking_project/blob/a61b5945f213b1ab9871a32d298b62f3f60d59fe/picking_camera_motor/README.md"
+    }
+  },
+  "runtime": {
+    "os": "Ubuntu 22.04",
+    "ros_distribution": "humble",
+    "python": "system Python 3.10 for ROS",
+    "ROS_DOMAIN_ID": "7",
+    "ROS_LOCALHOST_ONLY": "0",
+    "RMW_IMPLEMENTATION": "rmw_fastrtps_cpp",
+    "default_mode": "simulation",
+    "simulation_http_port": 18000
+  },
+  "validation_limit": "Source and documentation checks only. No three-notebook LAN test or physical hardware operation performed during this documentation task."
+}
