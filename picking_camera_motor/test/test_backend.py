@@ -269,3 +269,33 @@ def test_original_home_camera_failure_stops_without_server_command(real, tmp_pat
         assert serial.lines[-1].startswith('STOP ')
     finally:
         engine.close()
+
+
+def test_original_camera_has_no_local_timeout_or_alignment_hold(real, monkeypatch):
+    obj, serial, video = real
+    prepared(obj)
+    obj.motion_algorithm = 'original'
+    obj.stable_seconds = 0.5
+    clock = [100.0]
+    monkeypatch.setattr(backend.time, 'monotonic', lambda: clock[0])
+    obj.start(cmd(1, 'camera'))
+    video.marker = None
+    obj.poll()
+    clock[0] += 100
+    assert obj.poll() is None  # waits without a local 2s/20s timeout
+    video.marker = 1
+    video.x = 295
+    assert obj.poll() is None  # visible but off-center is not success
+    video.x = 270
+    assert obj.poll() is True  # first fresh centered verify frame, no clock advance
+    assert obj.required_stable_seconds == 0
+
+
+def test_original_manual_preparation_needs_stop_ack_but_no_hold(real):
+    obj, serial, video = real
+    obj.motion_algorithm = 'original'
+    obj.stable_seconds = 0.5
+    obj.prepare(1)
+    assert not obj.ready
+    obj.poll()  # STOPPED and one fresh centered frame suffice
+    assert obj.ready and obj.motor.state == 'IDLE'

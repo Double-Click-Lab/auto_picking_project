@@ -27,6 +27,9 @@ class Simulation:
 
 class Real:
     success_detail = 'STOPPED received and fresh image stable; output acknowledgement does not prove physical standstill'
+    @property
+    def required_stable_seconds(self):
+        return 0.0 if self.motion_algorithm == 'original' else self.stable_seconds
     def __init__(self, camera=0, port='/dev/ttyACM0', baud=115200, pwm=100,
                  tolerance_x=20.0, tolerance_y=60.0, stable_seconds=0.5,
                  marker_timeout=2.0, move_timeout=20.0, display=False,
@@ -150,7 +153,7 @@ class Real:
             target_error_px=None if center is None else [float(center[0]-w/2), float(center[1]-h/2)],
             centered=bool(centered), motor_state=self.motor.state,
             stable_seconds=stable_elapsed, max_stable_seconds=self.max_stable_seconds,
-            required_stable_seconds=self.stable_seconds, ready=self.ready)
+            required_stable_seconds=self.required_stable_seconds, ready=self.ready)
         if self.display:
             self.cv2.rectangle(frame, (int(w/2-self.tx), int(h/2-self.ty)),
                                (int(w/2+self.tx), int(h/2+self.ty)), (0,255,0), 2)
@@ -160,7 +163,7 @@ class Real:
                 self.cv2.circle(frame, point, 4, (0,0,255), -1)
                 self.cv2.putText(frame, str(marker_id), point, self.cv2.FONT_HERSHEY_SIMPLEX, .6, (0,0,255), 2)
             error = self.alignment_diagnostics['target_error_px']
-            text = f"target={target} error={error} {self.motor.state} stable={stable_elapsed:.2f}/{self.stable_seconds:.2f}s"
+            text = f"target={target} error={error} {self.motor.state} stable={stable_elapsed:.2f}/{self.required_stable_seconds:.2f}s"
             self.cv2.putText(frame, text, (5,20), self.cv2.FONT_HERSHEY_SIMPLEX, .4, (0,255,0), 1)
             self.cv2.imshow('picking camera (owner)', frame)
             if self.cv2.waitKey(1) & 255 == ord('q'): raise RuntimeError('local display quit')
@@ -171,7 +174,7 @@ class Real:
                 self.preparation_image_saved = bool(self.cv2.imwrite(self.preparation_image, frame))
             if centered and self.motor.state == 'IDLE':
                 self.stable = self.stable or now
-                if now-self.stable >= self.stable_seconds:
+                if now-self.stable >= self.required_stable_seconds:
                     self.motor.current = target
                     self.ready, self.preparing = True, False
             else: self.stable = None
@@ -183,20 +186,23 @@ class Real:
                     [float(marker_one[0]-w/2), float(marker_one[1]-h/2)],
                 centered=bool(centered), motor_state=self.motor.state,
                 stable_seconds=0.0 if self.stable is None else now-self.stable,
-                required_stable_seconds=self.stable_seconds,
+                required_stable_seconds=self.required_stable_seconds,
                 tolerance_px=[self.tx, self.ty], ready=self.ready)
             return
         if not self.active: return
         if self.motion_algorithm == 'original' and self.active['device'] == 'motor':
             return self.poll_original_motor(centered)
         self.success_detail = type(self).success_detail
-        if now-self.started > self.move_timeout:
+        if self.motion_algorithm == 'original':
+            self.success_detail = 'original algorithm: matching motor STOPPED and fresh centered image; no alignment hold required'
+        if self.motion_algorithm != 'original' and now-self.started > self.move_timeout:
             d = self.alignment_diagnostics
             raise RuntimeError(f"overall movement/alignment timeout; stage={self.stage}; "
                                f"target={target}; ids={d['detected_ids']}; error_px={d['target_error_px']}; "
                                f"motor={self.motor.state}; max_stable={self.max_stable_seconds:.3f}/{self.stable_seconds:.3f}s")
         if center is not None: self.last_seen = now
-        if now-self.last_seen > self.marker_timeout: raise RuntimeError('target marker missing timeout')
+        if self.motion_algorithm != 'original' and now-self.last_seen > self.marker_timeout:
+            raise RuntimeError('target marker missing timeout')
         if self.stage == 'observe':
             if self.active['device'] == 'camera':
                 self.stage = 'verify'
@@ -220,7 +226,7 @@ class Real:
             if self.motor.state != 'IDLE': raise RuntimeError('motor not stopped')
             if centered:
                 self.stable = self.stable or now
-                if now-self.stable >= self.stable_seconds:
+                if now-self.stable >= self.required_stable_seconds:
                     self.active = None
                     return True
             else: self.stable = None
