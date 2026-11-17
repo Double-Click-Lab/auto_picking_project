@@ -1,6 +1,7 @@
 camera_motor_node:
   ros__parameters:
     simulation: true
+    motion_algorithm: original
     display: false
     camera: 0
     port: /dev/ttyACM0

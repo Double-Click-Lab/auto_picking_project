@@ -26,7 +26,8 @@ class CameraMotorNode(Node):
                         pwm=100, tolerance_x=20.0, tolerance_y=60.0, stable_seconds=0.5,
                         marker_timeout=2.0, move_timeout=20.0, mapping_file='',
                         database=str(Path.home()/'.local/state/picking_camera_motor/state.sqlite3'),
-                        local_control_file='/tmp/picking_camera_motor.prepare')
+                        local_control_file='/tmp/picking_camera_motor.prepare', preparation_image='',
+                        motion_algorithm='original')
         self.cfg = {k:self.declare_parameter(k,v).value for k,v in defaults.items()}
         for k in ('tolerance_x','tolerance_y','stable_seconds','marker_timeout','move_timeout'):
             if self.cfg[k] <= 0: raise ValueError(k+' must be positive')
@@ -58,8 +59,11 @@ class CameraMotorNode(Node):
             if not self.cfg['simulation']:
                 backend = Real(**self.cfg)
                 engine.backend = backend
+                if engine.fault or engine.db.execute('SELECT 1 FROM commands WHERE ack=0').fetchone():
+                    backend.stop()  # persisted faults/results must not start automatic homing
             control = Path(self.cfg['local_control_file'])
             if control.exists(): control.unlink()  # stale request must never prepare on startup
+            last_diagnostic = 0.0
             while not self.done.is_set():
                 for _ in range(100):
                     try: kind,raw = self.inbox.get_nowait()
@@ -78,6 +82,10 @@ class CameraMotorNode(Node):
                             engine.db.commit()
                         else: engine.error('invalid local preparation request')
                 engine.tick()
+                diagnostic = getattr(backend, 'alignment_diagnostics', None)
+                if diagnostic is not None and time.monotonic()-last_diagnostic >= 1:
+                    self.get_logger().info('alignment: '+json.dumps(diagnostic))
+                    last_diagnostic = time.monotonic()
                 self.done.wait(0.01)
         except Exception as exc:
             self.get_logger().error('owner failed: '+str(exc))

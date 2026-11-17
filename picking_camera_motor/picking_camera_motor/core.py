@@ -208,7 +208,12 @@ class Engine:
                     self.abort('alignment failed')
         except Exception as exc:
             if self.active: self.abort('hardware: ' + str(exc))
-            else: self.latch('hardware: '+str(exc))
+            else:
+                # Local original homing can move without a server command.
+                # A camera/serial error must stop that motion as well.
+                try: stop = self.backend.stop()
+                except Exception as stop_exc: stop = 'STOP failed: '+str(stop_exc)
+                self.latch('hardware: '+str(exc)+'; '+str(stop))
         if self.mono()-self.last_publish >= 1:
             self.last_publish = self.mono()
             for (raw,) in self.db.execute('SELECT result FROM commands WHERE result IS NOT NULL AND ack=0'):

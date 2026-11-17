@@ -1,5 +1,45 @@
 # 카메라·리니어모터 노트북 (ROS2 Humble / 계약 v1)
 
+## 현재 동작 변경 — 2026-11-18
+
+서버 노드의 기본 `motion_algorithm`은 이제 `original`이다. `camera_linear.py`와
+`legacy.py` 원본 파일은 수정하지 않았다. 아래의 이전 검증 기록과 수동 준비 전용
+설명은 `verified` 방식의 설명이며, 현재 기본 방식과 구분한다.
+
+`original`의 실제 동작:
+
+- real 시작 시 STOP 연결 확인 후, 첫 새 영상으로 1번 마커를 확인한다. 중앙 박스
+  밖이면 원본 `MotorController.home()`으로 BACK 이동하고, 1번 마커 중심이 박스에
+  들어오면 STOP한다. 일치하는 STOPPED를 받은 뒤 ready가 된다. **노드 시작만으로
+  실제 BACK 이동이 시작될 수 있다.** simulation에서는 장치를 열지 않는다.
+- 서버 motor 명령은 원본 `start_target()`으로 현재보다 큰 번호에 FORWARD,
+  작은 번호에 BACK을 보낸다. 목표 중심이 박스 안에 들어오면 STOP하고 일치하는
+  STOPPED 응답으로 motor 성공을 기록한다. 이동 중 목표 미검출 2초 및 로컬 전체
+  20초 제한은 motor 명령에 적용하지 않는다.
+- 같은 번호는 이동하지 않는다. 서버에 잘못된 성공을 기록하지 않도록 현재의
+  새 영상에서 해당 마커가 중앙인지 확인한다. 벗어나 있으면 수동 복구가 필요하다.
+- 후속 camera 명령은 기존대로 같은 주문의 motor 성공을 요구하고, 새 영상에서
+  가로 ±20px / 세로 ±60px 안에 0.5초 연속 정렬을 확인한다. camera 명령에는 기존
+  marker_timeout/move_timeout이 적용된다. motor 성공만으로 주문 완료가 아니다.
+- 명령의 server expiry, heartbeat 5초 단절, 서버 세션 변경, cancel, 시리얼/영상
+  오류는 기존대로 STOP/실패 처리한다. 서버의 COMMAND_TIMEOUT이 전체 주문 명령의
+  수행 시간을 제한하므로, 서버 연동이 무제한 대기를 뜻하지 않는다.
+- 시작 시 기존 DB fault 또는 미확인 결과가 있으면 자동 탐색을 막는다. 기존
+  기록·ack를 처리하고 실제 정지 및 위치 확인 후 수동 `prepare N`으로 복구한다.
+  로컬 자동 1번 탐색 자체에는 원본처럼 이동 시간 제한이 없다. 정렬 대상이 보이지
+  않거나 끝에 도달하면 운영자가 정지해야 한다.
+
+`ros2 run ... --ros-args -p motion_algorithm:=original`로 명시할 수 있고,
+이전 수동 준비·정지 후 motor 영상 검증 방식은 `motion_algorithm:=verified`로
+선택한다. launch도 `motion_algorithm:=original|verified`를 지원한다.
+실시간 표시(`display:=true`)는 중앙 박스·검출 중심·오차·모터 상태를 보여준다.
+서버 토픽, UUID, SQLite 결과 보존/재전송/ack 규약과 실제 DB 경로는 바꾸지 않았다.
+
+이번 변경은 자동 테스트와 빌드로 검증하며, 변경된 real 노드를 실행하거나
+자동 홈밍하지 않았다. 단독 조작기와 real 서버 노드를 동시에 실행하지 않는다.
+
+## 이전 구현·검증 기록
+
 이 패키지는 motor와 camera만 담당한다. robot 토픽 발행이나 `/move_action`, `/pick_place` 호출은 없다. 기본 simulation이며 USB/카메라를 열지 않는다. 실장비 구동 시험과 세 노트북 LAN 통합 시험은 수행하지 않았다.
 
 ## 확인한 기존 파일과 보존
